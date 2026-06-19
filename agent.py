@@ -2,6 +2,7 @@ import asyncio
 from playwright.async_api import async_playwright
 import requests
 import os
+import random
 
 # GitHub injects your secrets here
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -60,6 +61,13 @@ async def get_defi_score(page, address):
         return 0
 
 async def main():
+    # --- NEW: RANDOM DELAY ---
+    # Sleeps for a random time between 1 and 15 seconds to bypass anti-bot protection
+    delay = random.uniform(1, 15)
+    print(f"[*] Waiting for {delay:.2f} seconds to mimic human behavior...")
+    await asyncio.sleep(delay)
+    # -------------------------
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context()
