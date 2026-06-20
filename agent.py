@@ -7,7 +7,8 @@ import random
 # GitHub injects your secrets here
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-SCORE_THRESHOLD = 75
+# CHANGED: Score threshold lowered to 70
+SCORE_THRESHOLD = 70
 
 DEXSCREENER_ROW_SELECTOR = "a.css-1kf2t1h"
 DEFI_SCORE_SELECTOR = "div.scanner-score-value"
@@ -35,7 +36,7 @@ async def send_telegram_message(message):
         print(f"[-] Failed to send Telegram message: {e}")
 
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener avec filtres Market Cap et Liquidité...")
+    print("[*] Scraping DexScreener avec filtres Profil, Market Cap et Liquidité...")
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded")
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=15000)
@@ -46,38 +47,49 @@ async def get_new_solana_tokens(page):
     tokens = []
     rows = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
     
-    for row in rows[:50]: # On scanne les 50 premiers tokens pour trouver 15 bons
+    for row in rows[:50]: # On scanne les 50 premiers tokens
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
+                # --- NOUVEAU FILTRE : VÉRIFICATION DES RÉSEAUX SOCIAUX ---
+                links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
+                has_socials = False
+                for link in links:
+                    if 'twitter.com' in link or 'x.com' in link or 't.me' in link or 'telegram.me' in link or ('http' in link and 'dexscreener.com' not in link):
+                        has_socials = True
+                        break
+                
+                if not has_socials:
+                    continue # Si pas de réseau social, on ignore ce token
+                # --------------------------------------------------------
+
                 # Récupérer tout le texte de la ligne
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
                 
-                # Extraire les montants en dollars (ex: $540K, $1.2M)
+                # Extraire les montants en dollars
                 dollar_strings = [s for s in text_parts if s.startswith('$') and len(s) < 10]
                 
                 if len(dollar_strings) >= 2:
-                    # Sur DexScreener, l'ordre est généralement : 1. Liquidité, 2. Market Cap
                     liq_val = parse_dollar_value(dollar_strings[0])
                     mcap_val = parse_dollar_value(dollar_strings[1])
                     
-                    # LES FILTRES ICI :
+                    # LES FILTRES FINANCIERS ICI :
                     if liq_val >= 20000 and mcap_val >= 100000:
                         name_element = await row.query_selector("span.css-1aqamvn")
                         name = await name_element.inner_text() if name_element else "Unknown"
                         
-                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
+                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f} | Socials: Oui")
                         tokens.append({"name": name, "address": address})
                         
                         if len(tokens) >= 15:
-                            break # On a trouvé nos 15 tokens, on arrête de chercher
+                            break 
         except:
             continue
             
-    print(f"[+] Found {len(tokens)} tokens qui respectent les filtres.")
+    print(f"[+] Found {len(tokens)} tokens qui respectent tous les filtres.")
     return tokens
 
 async def get_defi_score(page, address):
@@ -122,7 +134,7 @@ async def main():
             await asyncio.sleep(3)
             
         if not found_good_coin:
-            print("[-] No tokens met the 75+ threshold this run.")
+            print("[-] No tokens met the 70+ threshold this run.")
             
         await browser.close()
         print("✅ Agent finished task.")
