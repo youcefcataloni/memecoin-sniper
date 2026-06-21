@@ -4,17 +4,15 @@ import requests
 import os
 import random
 
-# GitHub injects your secrets here
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-# CHANGED: Score threshold lowered to 70
 SCORE_THRESHOLD = 70
 
-DEXSCREENER_ROW_SELECTOR = "a.css-1kf2t1h"
+# MUCH SAFER SELECTOR: Finds any link that goes to a Solana token
+DEXSCREENER_ROW_SELECTOR = "a[href*='/solana/']"
 DEFI_SCORE_SELECTOR = "div.scanner-score-value"
 
 def parse_dollar_value(val_str):
-    """Convertit un texte comme '$1.2M' ou '$540K' en nombre (1200000)"""
     try:
         val_str = val_str.replace('$', '').replace(',', '').strip()
         if 'M' in val_str:
@@ -31,29 +29,28 @@ async def send_telegram_message(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload)
-        print("[+] Telegram message sent.")
+        print("[+] Telegram message sent successfully.")
     except Exception as e:
         print(f"[-] Failed to send Telegram message: {e}")
 
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener avec filtres Profil, Market Cap et Liquidité...")
+    print("[*] Scraping DexScreener...")
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded")
     try:
-        await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=15000)
+        await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
     except:
-        print("[-] DexScreener layout changed or blocked the bot.")
+        print("[-] DexScreener blocked the bot or layout changed.")
         return []
 
     tokens = []
     rows = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
     
-    for row in rows[:50]: # On scanne les 50 premiers tokens
+    for row in rows[:50]:
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                # --- NOUVEAU FILTRE : VÉRIFICATION DES RÉSEAUX SOCIAUX ---
                 links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
                 has_socials = False
                 for link in links:
@@ -62,26 +59,21 @@ async def get_new_solana_tokens(page):
                         break
                 
                 if not has_socials:
-                    continue # Si pas de réseau social, on ignore ce token
-                # --------------------------------------------------------
-
-                # Récupérer tout le texte de la ligne
+                    continue
+                
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
-                
-                # Extraire les montants en dollars
                 dollar_strings = [s for s in text_parts if s.startswith('$') and len(s) < 10]
                 
                 if len(dollar_strings) >= 2:
                     liq_val = parse_dollar_value(dollar_strings[0])
                     mcap_val = parse_dollar_value(dollar_strings[1])
                     
-                    # LES FILTRES FINANCIERS ICI :
                     if liq_val >= 20000 and mcap_val >= 100000:
                         name_element = await row.query_selector("span.css-1aqamvn")
                         name = await name_element.inner_text() if name_element else "Unknown"
                         
-                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f} | Socials: Oui")
+                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
                         tokens.append({"name": name, "address": address})
                         
                         if len(tokens) >= 15:
@@ -89,7 +81,7 @@ async def get_new_solana_tokens(page):
         except:
             continue
             
-    print(f"[+] Found {len(tokens)} tokens qui respectent tous les filtres.")
+    print(f"[+] Found {len(tokens)} tokens.")
     return tokens
 
 async def get_defi_score(page, address):
@@ -108,21 +100,25 @@ async def get_defi_score(page, address):
         return 0
 
 async def main():
-    # --- RANDOM DELAY ---
     delay = random.uniform(1, 15)
     print(f"[*] Waiting for {delay:.2f} seconds to mimic human behavior...")
     await asyncio.sleep(delay)
-    # -------------------------
 
     async with async_playwright() as p:
+        # NEW: Added a User-Agent to bypass DexScreener bot protection
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        context = await browser.new_context()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         
         dex_page = await context.new_page()
         defi_page = await context.new_page()
 
         print("🤖 Agent starting up...")
+        
+        # TEST MESSAGE: This will run immediately to prove Telegram works
         await send_telegram_message("🧪 Test Message: The agent is online and Telegram is working!")
+        
         tokens = await get_new_solana_tokens(dex_page)
         
         found_good_coin = False
