@@ -40,7 +40,6 @@ async def send_telegram_message(message):
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener...")
-    # CORRECTED: Changed back to domcontentloaded to prevent crashing
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
@@ -122,7 +121,6 @@ async def main():
         defi_page = await context.new_page()
 
         print("🤖 Agent starting up...")
-        await send_telegram_message("🧪 Test Message: Agent is online!")
         
         tokens = await get_new_solana_tokens(dex_page)
         
