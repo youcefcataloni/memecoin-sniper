@@ -122,6 +122,7 @@ async def main():
         defi_page = await context.new_page()
 
         print("🤖 Agent starting up...")
+        await send_telegram_message("🧪 Test Message: The agent is online and Telegram is working!")
         tokens = await get_new_solana_tokens(dex_page)
         
         found_good_coin = False
