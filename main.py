@@ -33,14 +33,17 @@ async def send_telegram_message(message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         print(f"[*] Telegram response code: {response.status_code}")
-        if response.status_code != 200:
-            print(f"[-] Telegram error: {response.text}")
     except Exception as e:
         print(f"[-] Failed to send Telegram message: {e}")
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener...")
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
+    
+    # NOUVEAU : On affiche le titre de la page pour voir si Cloudflare nous bloque
+    title = await page.title()
+    print(f"[*] Titre de la page: {title}")
+    
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
     except:
@@ -110,9 +113,10 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        # NOUVEAU : Utilisation de Firefox au lieu de Chromium
+        browser = await p.firefox.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
         )
         
         dex_page = await context.new_page()
