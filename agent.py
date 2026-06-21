@@ -8,7 +8,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SCORE_THRESHOLD = 70
 
-# MUCH SAFER SELECTOR: Finds any link that goes to a Solana token
 DEXSCREENER_ROW_SELECTOR = "a[href*='/solana/']"
 DEFI_SCORE_SELECTOR = "div.scanner-score-value"
 
@@ -25,17 +24,25 @@ def parse_dollar_value(val_str):
         return 0
 
 async def send_telegram_message(message):
+    # NEW: This will tell us immediately if GitHub lost your secrets
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[-] ERROR: Telegram secrets are missing in GitHub! Cannot send message.")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload)
-        print("[+] Telegram message sent successfully.")
+        response = requests.post(url, json=payload, timeout=10)
+        print(f"[*] Telegram response code: {response.status_code}")
+        if response.status_code != 200:
+            print(f"[-] Telegram error: {response.text}")
     except Exception as e:
         print(f"[-] Failed to send Telegram message: {e}")
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener...")
-    await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded")
+    # NEW: networkidle wait to let Cloudflare pass
+    await page.goto("https://dexscreener.com/solana", wait_until="networkidle", timeout=30000)
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
     except:
@@ -100,24 +107,24 @@ async def get_defi_score(page, address):
         return 0
 
 async def main():
-    delay = random.uniform(1, 15)
-    print(f"[*] Waiting for {delay:.2f} seconds to mimic human behavior...")
+    delay = random.uniform(1, 10)
+    print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # NEW: Added a User-Agent to bypass DexScreener bot protection
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         
+        # NEW: Bypass basic bot detection
         dex_page = await context.new_page()
+        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         defi_page = await context.new_page()
 
         print("🤖 Agent starting up...")
-        
-        # TEST MESSAGE: This will run immediately to prove Telegram works
-        await send_telegram_message("🧪 Test Message: The agent is online and Telegram is working!")
+        await send_telegram_message("🧪 Test Message: Agent is online!")
         
         tokens = await get_new_solana_tokens(dex_page)
         
