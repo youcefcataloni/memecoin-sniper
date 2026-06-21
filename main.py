@@ -40,7 +40,8 @@ async def send_telegram_message(message):
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener...")
-    await page.goto("https://dexscreener.com/solana", wait_until="networkidle", timeout=30000)
+    # CORRECTED: Changed back to domcontentloaded to prevent crashing
+    await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
     except:
