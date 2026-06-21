@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright requests
-          playwright install chromium --with-deps
+          playwright install firefox --with-deps
 
       - name: Run AI Agent
         env:
