@@ -1,5 +1,6 @@
 import asyncio
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 import requests
 import os
 import random
@@ -95,22 +96,27 @@ async def get_defi_score(page, address):
     url = f"https://de.fi/scanner/contract/{address}"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        
+        # NOUVEAU : Bouger la souris pour tromper Cloudflare
+        await page.mouse.move(100, 100)
+        await page.mouse.move(200, 200)
         await asyncio.sleep(5)
         
         title = await page.title()
         print(f"    -> Titre De.fi: {title}")
         
-        # NOUVEAU : On lit le code source HTML brut pour voir ce que De.fi cache
-        html_content = await page.content()
-        print(f"    -> HTML De.fi (300 caractères): {html_content[:300]}")
-        
-        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=20000)
+        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=30000)
         score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
         score_text = await score_element.inner_text()
         score = int(score_text.split("/")[0].strip())
         print(f"    -> Score: {score}/100")
         return score
     except Exception as e:
+        try:
+            body_text = await page.evaluate("document.body.innerText.substring(0, 100)")
+            print(f"    -> Texte De.fi: {body_text}")
+        except:
+            print("    -> Page complètement vide.")
         print("    -> Could not find score.")
         return 0
 
@@ -120,18 +126,20 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        browser = await p.firefox.launch(headless=True)
+        # NOUVEAU : Retour à Chromium car Stealth fonctionne mieux avec
+        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='en-US',
         )
         
         dex_page = await context.new_page()
-        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        # NOUVEAU : Application du mode furtif (Stealth)
+        await stealth_async(dex_page)
         
         defi_page = await context.new_page()
-        await defi_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        await stealth_async(defi_page)
 
         print("🤖 Agent starting up...")
         
