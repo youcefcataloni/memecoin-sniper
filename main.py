@@ -63,44 +63,38 @@ async def get_new_solana_tokens(page):
     print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
 
     tokens = []
-    for row in token_rows[:50]:
+    for row in token_rows[:5]: # ON PREND SEULEMENT LES 5 PREMIERS POUR LE TEST
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                # NOUVEAU : On récupère les liens dans toute la ligne
-                links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
-                has_socials = False
-                for link in links:
-                    if 'twitter.com' in link or 'x.com' in link or 't.me' in link or 'telegram.me' in link or ('http' in link and 'dexscreener.com' not in link):
-                        has_socials = True
-                        break
-                
-                if not has_socials:
-                    continue
+                # DÉSACTIVÉ POUR LE TEST : On force has_socials à True
+                has_socials = True
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
                 
-                # CORRECTION MAJEURE : Prendre TOUS les montants $ et garder les 2 derniers (Liq & Mcap)
-                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 12]
+                # CORRECTION : len(s) < 15 au lieu de 12 pour inclure les petits prix
+                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 15]
                 
+                # DEBUG : Voir ce que l'agent voit
+                print(f"--- DEBUG {address[:8]} ---")
+                print(f"Dollar strings trouvés: {dollar_strings}")
+
                 if len(dollar_strings) >= 2:
-                    # Les deux derniers chiffres en dollars sont toujours Liquidité et Market Cap
                     liq_val = parse_dollar_value(dollar_strings[-2])
                     mcap_val = parse_dollar_value(dollar_strings[-1])
                     
+                    print(f"Liq calculée: {liq_val} | Mcap calculée: {mcap_val}")
+                    
                     if liq_val >= 20000 and mcap_val >= 100000:
-                        # On extrait le nom (généralement le 4ème élément de la ligne)
                         name = text_parts[3] if len(text_parts) > 3 else "Unknown"
                         
                         print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
                         tokens.append({"name": name, "address": address})
-                        
-                        if len(tokens) >= 15:
-                            break 
-        except:
+        except Exception as e:
+            print(f"Erreur sur une ligne: {e}")
             continue
             
     print(f"[+] Found {len(tokens)} tokens valides.")
