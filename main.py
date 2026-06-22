@@ -40,9 +40,11 @@ async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener...")
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
     
-    # NOUVEAU : On affiche le titre de la page pour voir si Cloudflare nous bloque
     title = await page.title()
     print(f"[*] Titre de la page: {title}")
+    
+    # NOUVEAU : On attend 5 secondes que le tableau se remplisse
+    await asyncio.sleep(5)
     
     try:
         await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
@@ -52,7 +54,14 @@ async def get_new_solana_tokens(page):
 
     tokens = []
     rows = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
+    print(f"[*] Nombre de lignes trouvées: {len(rows)}")
     
+    # NOUVEAU : MODE DÉBOGAGE - On affiche le texte des 3 premières lignes
+    for i in range(min(3, len(rows))):
+        debug_text = await rows[i].inner_text()
+        print(f"--- DEBUG LIGNE {i+1} ---")
+        print(debug_text.replace('\n', ' | ')[:300])
+
     for row in rows[:50]:
         try:
             href = await row.get_attribute("href")
@@ -71,7 +80,8 @@ async def get_new_solana_tokens(page):
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
-                dollar_strings = [s for s in text_parts if s.startswith('$') and len(s) < 10]
+                # CHANGÉ : Cherche n'importe quel texte contenant un '$'
+                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 12]
                 
                 if len(dollar_strings) >= 2:
                     liq_val = parse_dollar_value(dollar_strings[0])
@@ -113,7 +123,6 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # NOUVEAU : Utilisation de Firefox au lieu de Chromium
         browser = await p.firefox.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
