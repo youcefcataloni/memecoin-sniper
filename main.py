@@ -71,26 +71,26 @@ async def get_defi_score(page, address):
         await page.mouse.move(100, 100)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         
-        # NOUVEAU : Attendre 20 secondes que De.fi finisse de calculer
         print("    -> Attente de 20 secondes pour le calcul de De.fi...")
         await asyncio.sleep(20)
         
-        # Remonter un peu au cas où le score est au milieu
-        await page.evaluate("window.scrollTo(0, 500)")
-        await asyncio.sleep(2)
+        # NOUVEAU : Lire le code source HTML brut au lieu du texte visible
+        html_content = await page.content()
         
-        # Lire TOUT le texte de la page
-        body_text = await page.evaluate("document.body.innerText")
-        
-        # Recherche du score avec une Regex (cherche "75/100", "85 /100", etc.)
-        match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+        # Recherche du score dans le HTML avec une Regex (cherche "75/100", "85 /100", etc.)
+        match = re.search(r'(\d{1,3})\s*/\s*100', html_content)
         if match:
             score = int(match.group(1))
             print(f"    -> Score trouvé: {score}/100")
             return score
         else:
-            # NOUVEAU : Afficher 2000 caractères pour être sûr de voir le score
-            print(f"    -> Could not find score. Texte complet (2000 chars):\n{body_text[:2000]}")
+            # Si non trouvé, on cherche le mot "score" dans le HTML pour voir où il est
+            score_index = html_content.lower().find("score")
+            if score_index != -1:
+                print(f"    -> Contexte 'Score' dans le HTML: ...{html_content[max(0, score_index-100):score_index+200]}...")
+            else:
+                print("    -> Mot 'Score' introuvable dans le HTML.")
+            print("    -> Could not find score.")
             return 0
     except Exception as e:
         print(f"    -> Error: {e}")
@@ -141,4 +141,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
