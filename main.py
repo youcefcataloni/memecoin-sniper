@@ -1,4 +1,3 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -96,6 +95,58 @@ async def get_defi_score(page, address):
     url = f"https://de.fi/scanner/contract/{address}"
     try:
         await page.goto(url, wait_until="load", timeout=30000)
-        await asyncio.sleep(3) # On attend 3 secondes que la page s'affiche
+        await asyncio.sleep(3)
         
-        title = await page
+        title = await page.title()
+        print(f"    -> Titre De.fi: {title}")
+        
+        body_text = await page.evaluate("document.body.innerText.substring(0, 200)")
+        print(f"    -> Texte De.fi: {body_text}")
+        
+        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=25000)
+        score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
+        score_text = await score_element.inner_text()
+        score = int(score_text.split("/")[0].strip())
+        print(f"    -> Score: {score}/100")
+        return score
+    except Exception as e:
+        print("    -> Could not find score.")
+        return 0
+
+async def main():
+    delay = random.uniform(1, 10)
+    print(f"[*] Waiting for {delay:.2f} seconds...")
+    await asyncio.sleep(delay)
+
+    async with async_playwright() as p:
+        browser = await p.firefox.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+        )
+        
+        dex_page = await context.new_page()
+        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        defi_page = await context.new_page()
+
+        print("🤖 Agent starting up...")
+        
+        tokens = await get_new_solana_tokens(dex_page)
+        
+        found_good_coin = False
+        for token in tokens:
+            score = await get_defi_score(defi_page, token["address"])
+            if score >= SCORE_THRESHOLD:
+                found_good_coin = True
+                message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
+                await send_telegram_message(message)
+            await asyncio.sleep(3)
+            
+        if not found_good_coin:
+            print("[-] No tokens met the 70+ threshold this run.")
+            
+        await browser.close()
+        print("✅ Agent finished task.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
