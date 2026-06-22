@@ -63,38 +63,29 @@ async def get_new_solana_tokens(page):
     print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
 
     tokens = []
-    for row in token_rows[:5]: # ON PREND SEULEMENT LES 5 PREMIERS POUR LE TEST
+    for row in token_rows[:15]: # On remet à 15 tokens
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                # DÉSACTIVÉ POUR LE TEST : On force has_socials à True
-                has_socials = True
+                has_socials = True # Toujours désactivé pour le test
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
-                
-                # CORRECTION : len(s) < 15 au lieu de 12 pour inclure les petits prix
                 dollar_strings = [s for s in text_parts if '$' in s and len(s) < 15]
                 
-                # DEBUG : Voir ce que l'agent voit
-                print(f"--- DEBUG {address[:8]} ---")
-                print(f"Dollar strings trouvés: {dollar_strings}")
-
                 if len(dollar_strings) >= 2:
                     liq_val = parse_dollar_value(dollar_strings[-2])
                     mcap_val = parse_dollar_value(dollar_strings[-1])
                     
-                    print(f"Liq calculée: {liq_val} | Mcap calculée: {mcap_val}")
-                    
                     if liq_val >= 20000 and mcap_val >= 100000:
-                        name = text_parts[3] if len(text_parts) > 3 else "Unknown"
+                        # CORRECTION : Le nom est le 2ème élément (index 1)
+                        name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
                         print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
                         tokens.append({"name": name, "address": address})
-        except Exception as e:
-            print(f"Erreur sur une ligne: {e}")
+        except:
             continue
             
     print(f"[+] Found {len(tokens)} tokens valides.")
@@ -104,14 +95,20 @@ async def get_defi_score(page, address):
     print(f"[*] Checking De.fi for {address[:8]}...")
     url = f"https://de.fi/scanner/contract/{address}"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=15000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        
+        # NOUVEAU : Afficher le titre de la page De.fi
+        title = await page.title()
+        print(f"    -> Titre De.fi: {title}")
+        
+        # NOUVEAU : Attendre plus longtemps (25 secondes) car De.fi analyse le contrat
+        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=25000)
         score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
         score_text = await score_element.inner_text()
         score = int(score_text.split("/")[0].strip())
         print(f"    -> Score: {score}/100")
         return score
-    except:
+    except Exception as e:
         print("    -> Could not find score.")
         return 0
 
