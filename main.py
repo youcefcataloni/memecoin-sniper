@@ -9,20 +9,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SCORE_THRESHOLD = 70
 
-DEXSCREENER_ROW_SELECTOR = "a[href*='/solana/']"
-
-def parse_dollar_value(val_str):
-    try:
-        val_str = val_str.replace('$', '').replace(',', '').strip()
-        if 'M' in val_str:
-            return float(val_str.replace('M', '')) * 1_000_000
-        elif 'K' in val_str:
-            return float(val_str.replace('K', '')) * 1_000
-        else:
-            return float(val_str)
-    except:
-        return 0
-
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[-] ERROR: Telegram secrets are missing in GitHub! Cannot send message.")
@@ -36,59 +22,44 @@ async def send_telegram_message(message):
     except Exception as e:
         print(f"[-] Failed to send Telegram message: {e}")
 
-async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener...")
-    await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
-    
-    title = await page.title()
-    print(f"[*] Titre de la page: {title}")
-    await asyncio.sleep(5)
-    
+def get_new_solana_tokens_via_api():
+    print("[*] Récupération des tokens via l'API DexScreener...")
     try:
-        await page.wait_for_selector(DEXSCREENER_ROW_SELECTOR, timeout=20000)
-    except:
-        print("[-] DexScreener blocked the bot or layout changed.")
-        return []
-
-    all_links = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
-    
-    token_rows = []
-    for row in all_links:
-        href = await row.get_attribute("href")
-        if href:
-            address = href.split("/solana/")[1].split("?")[0]
-            if len(address) >= 32:
-                token_rows.append(row)
-                
-    print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
-
-    tokens = []
-    for row in token_rows[:15]:
-        try:
-            href = await row.get_attribute("href")
-            if href and "/solana/" in href:
-                address = href.split("/solana/")[1].split("?")[0]
-                
-                has_socials = True 
-                
-                row_text = await row.inner_text()
-                text_parts = row_text.split('\n')
-                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 15]
-                
-                if len(dollar_strings) >= 2:
-                    liq_val = parse_dollar_value(dollar_strings[-2])
-                    mcap_val = parse_dollar_value(dollar_strings[-1])
-                    
-                    if liq_val >= 20000 and mcap_val >= 100000:
-                        name = text_parts[1] if len(text_parts) > 1 else "Unknown"
-                        
-                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
-                        tokens.append({"name": name, "address": address})
-        except:
-            continue
+        # 1. Récupérer les derniers tokens avec un profil (socials)
+        res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
+        profiles = res.json()
+        
+        # Filtrer uniquement la blockchain Solana
+        solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
+        print(f"[*] Trouvé {len(solana_profiles)} profils Solana récents.")
+        
+        tokens = []
+        for p in solana_profiles[:50]: # Vérifier les 50 derniers
+            address = p.get('tokenAddress')
+            if not address: continue
             
-    print(f"[+] Found {len(tokens)} tokens valides.")
-    return tokens
+            # 2. Récupérer les données financières (Liq, Mcap) de ce token
+            data_res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}", timeout=10)
+            data = data_res.json()
+            pairs = data.get('pairs', [])
+            if not pairs: continue
+            
+            pair = pairs[0]
+            liq = pair.get('liquidity', {}).get('usd', 0)
+            mcap = pair.get('marketCap', 0)
+            name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
+            
+            if liq >= 20000 and mcap >= 100000:
+                print(f"    -> [GARDÉ] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
+                tokens.append({"name": name, "address": address})
+                
+            if len(tokens) >= 15:
+                break
+                
+        return tokens
+    except Exception as e:
+        print(f"[-] Erreur API DexScreener: {e}")
+        return []
 
 async def get_defi_score(page, address):
     print(f"[*] Checking De.fi for {address[:8]}...")
@@ -99,19 +70,13 @@ async def get_defi_score(page, address):
         # Bouger la souris et scroller pour forcer le chargement
         await page.mouse.move(100, 100)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        # NOUVEAU : Attendre 15 secondes que De.fi analyse le contrat et affiche le score
+        
+        # Attendre 15 secondes que De.fi analyse le contrat
         await asyncio.sleep(15)
         
-        # NOUVEAU : Lire TOUT le texte de la page
+        # Lire TOUT le texte de la page
         body_text = await page.evaluate("document.body.innerText")
         
-        # NOUVEAU : Afficher 500 caractères autour du mot "Score" pour voir ce que De.fi affiche
-        score_index = body_text.lower().find("score")
-        if score_index != -1:
-            print(f"    -> Contexte du mot 'Score': ...{body_text[max(0, score_index-50):score_index+450]}...")
-        else:
-            print(f"    -> Mot 'Score' non trouvé. Texte (500 chars): {body_text[:500]}")
-
         # Recherche du score avec une Regex (cherche "75/100", "85 /100", etc.)
         match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
         if match:
@@ -119,7 +84,13 @@ async def get_defi_score(page, address):
             print(f"    -> Score trouvé: {score}/100")
             return score
         else:
-            print("    -> Could not find score pattern (XX/100).")
+            # Si non trouvé, on affiche un extrait pour comprendre
+            score_index = body_text.lower().find("score")
+            if score_index != -1:
+                print(f"    -> Contexte 'Score': ...{body_text[max(0, score_index-50):score_index+450]}...")
+            else:
+                print(f"    -> Mot 'Score' non trouvé. Texte: {body_text[:500]}")
+            print("    -> Could not find score.")
             return 0
     except Exception as e:
         print(f"    -> Error: {e}")
@@ -130,7 +101,15 @@ async def main():
     print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
+    # 1. On utilise l'API pour DexScreener (pas de navigateur, pas de blocage)
+    tokens = get_new_solana_tokens_via_api()
+    
+    if not tokens:
+        print("[-] Aucun token trouvé via l'API.")
+        return
+
     async with async_playwright() as p:
+        # 2. On utilise Chromium pour De.fi (avec xvfb pour tromper Cloudflare)
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -138,15 +117,10 @@ async def main():
             locale='en-US',
         )
         
-        dex_page = await context.new_page()
-        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
         defi_page = await context.new_page()
         await defi_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
-        
-        tokens = await get_new_solana_tokens(dex_page)
         
         found_good_coin = False
         for token in tokens:
@@ -167,3 +141,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
