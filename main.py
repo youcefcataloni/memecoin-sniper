@@ -3,13 +3,13 @@ from playwright.async_api import async_playwright
 import requests
 import os
 import random
+import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SCORE_THRESHOLD = 70
 
 DEXSCREENER_ROW_SELECTOR = "a[href*='/solana/']"
-DEFI_SCORE_SELECTOR = "div.scanner-score-value"
 
 def parse_dollar_value(val_str):
     try:
@@ -96,27 +96,25 @@ async def get_defi_score(page, address):
     try:
         await page.goto(url, wait_until="load", timeout=60000)
         
-        # Bouger la souris pour tromper Cloudflare
+        # Bouger la souris et scroller pour forcer le chargement
         await page.mouse.move(100, 100)
-        await page.mouse.move(200, 200)
-        await asyncio.sleep(5)
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(10) # Laisser 10 secondes à De.fi pour analyser le contrat
         
-        title = await page.title()
-        print(f"    -> Titre De.fi: {title}")
+        body_text = await page.evaluate("document.body.innerText")
         
-        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=30000)
-        score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
-        score_text = await score_element.inner_text()
-        score = int(score_text.split("/")[0].strip())
-        print(f"    -> Score: {score}/100")
-        return score
+        # NOUVEAU : Recherche intelligente du score avec une Regex (cherche "75/100", "85 /100", etc.)
+        match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+        if match:
+            score = int(match.group(1))
+            print(f"    -> Score trouvé: {score}/100")
+            return score
+        else:
+            print(f"    -> Texte De.fi (200 chars): {body_text[:200]}")
+            print("    -> Could not find score.")
+            return 0
     except Exception as e:
-        try:
-            body_text = await page.evaluate("document.body.innerText.substring(0, 100)")
-            print(f"    -> Texte De.fi: {body_text}")
-        except:
-            print("    -> Page complètement vide.")
-        print("    -> Could not find score.")
+        print(f"    -> Error: {e}")
         return 0
 
 async def main():
@@ -125,7 +123,6 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # NOUVEAU : headless=False pour tromper Cloudflare (grâce à xvfb)
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -150,7 +147,9 @@ async def main():
                 found_good_coin = True
                 message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
                 await send_telegram_message(message)
-            await asyncio.sleep(3)
+            
+            # NOUVEAU : Attendre 10 secondes entre chaque token pour ne pas se faire bloquer par De.fi
+            await asyncio.sleep(10)
             
         if not found_good_coin:
             print("[-] No tokens met the 70+ threshold this run.")
