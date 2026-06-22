@@ -2,9 +2,7 @@ name: Memecoin Sniper Agent
 
 on:
   schedule:
-    # This runs every 30 minutes. Times are in UTC.
     - cron: "*/30 * * * *"
-  # This allows you to manually trigger it to test it right now
   workflow_dispatch:
 
 jobs:
@@ -21,8 +19,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright requests
-          playwright install firefox --with-deps
+          pip install playwright requests playwright-stealth
+          playwright install chromium --with-deps
 
       - name: Run AI Agent
         env:
