@@ -71,8 +71,13 @@ async def get_defi_score(page, address):
         await page.mouse.move(100, 100)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         
-        # Attendre 15 secondes que De.fi analyse le contrat
-        await asyncio.sleep(15)
+        # NOUVEAU : Attendre 20 secondes que De.fi finisse de calculer
+        print("    -> Attente de 20 secondes pour le calcul de De.fi...")
+        await asyncio.sleep(20)
+        
+        # Remonter un peu au cas où le score est au milieu
+        await page.evaluate("window.scrollTo(0, 500)")
+        await asyncio.sleep(2)
         
         # Lire TOUT le texte de la page
         body_text = await page.evaluate("document.body.innerText")
@@ -84,13 +89,8 @@ async def get_defi_score(page, address):
             print(f"    -> Score trouvé: {score}/100")
             return score
         else:
-            # Si non trouvé, on affiche un extrait pour comprendre
-            score_index = body_text.lower().find("score")
-            if score_index != -1:
-                print(f"    -> Contexte 'Score': ...{body_text[max(0, score_index-50):score_index+450]}...")
-            else:
-                print(f"    -> Mot 'Score' non trouvé. Texte: {body_text[:500]}")
-            print("    -> Could not find score.")
+            # NOUVEAU : Afficher 2000 caractères pour être sûr de voir le score
+            print(f"    -> Could not find score. Texte complet (2000 chars):\n{body_text[:2000]}")
             return 0
     except Exception as e:
         print(f"    -> Error: {e}")
