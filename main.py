@@ -1,6 +1,5 @@
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 import requests
 import os
 import random
@@ -95,9 +94,9 @@ async def get_defi_score(page, address):
     print(f"[*] Checking De.fi for {address[:8]}...")
     url = f"https://de.fi/scanner/contract/{address}"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(url, wait_until="load", timeout=60000)
         
-        # NOUVEAU : Bouger la souris pour tromper Cloudflare
+        # Bouger la souris pour tromper Cloudflare
         await page.mouse.move(100, 100)
         await page.mouse.move(200, 200)
         await asyncio.sleep(5)
@@ -126,8 +125,8 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # NOUVEAU : Retour à Chromium car Stealth fonctionne mieux avec
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        # NOUVEAU : headless=False pour tromper Cloudflare (grâce à xvfb)
+        browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
@@ -135,11 +134,10 @@ async def main():
         )
         
         dex_page = await context.new_page()
-        # NOUVEAU : Application du mode furtif (Stealth)
-        await stealth_async(dex_page)
+        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         defi_page = await context.new_page()
-        await stealth_async(defi_page)
+        await defi_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
