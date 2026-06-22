@@ -94,30 +94,23 @@ async def get_defi_score(page, address):
     print(f"[*] Checking De.fi for {address[:8]}...")
     url = f"https://de.fi/scanner/contract/{address}"
     try:
-        await page.goto(url, wait_until="load", timeout=60000)
-        
-        # TECHNIQUE STEALTH : Bouger la souris pour tromper l'anti-bot
-        await page.mouse.move(100, 100)
-        await page.mouse.move(200, 200)
-        await asyncio.sleep(2)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(5)
         
         title = await page.title()
         print(f"    -> Titre De.fi: {title}")
         
-        # On attend jusqu'à 30 secondes que le score apparaisse
-        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=30000)
+        # NOUVEAU : On lit le code source HTML brut pour voir ce que De.fi cache
+        html_content = await page.content()
+        print(f"    -> HTML De.fi (300 caractères): {html_content[:300]}")
+        
+        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=20000)
         score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
         score_text = await score_element.inner_text()
         score = int(score_text.split("/")[0].strip())
         print(f"    -> Score: {score}/100")
         return score
     except Exception as e:
-        # Si ça échoue, on lit le texte pour voir ce que De.fi a affiché
-        try:
-            body_text = await page.evaluate("document.body.innerText.substring(0, 100)")
-            print(f"    -> Texte De.fi: {body_text}")
-        except:
-            print("    -> Page complètement vide.")
         print("    -> Could not find score.")
         return 0
 
@@ -128,8 +121,6 @@ async def main():
 
     async with async_playwright() as p:
         browser = await p.firefox.launch(headless=True)
-        
-        # TECHNIQUE STEALTH : Contexte réaliste
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
             viewport={'width': 1920, 'height': 1080},
