@@ -1,4 +1,3 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -43,7 +42,6 @@ async def get_new_solana_tokens(page):
     
     title = await page.title()
     print(f"[*] Titre de la page: {title}")
-    
     await asyncio.sleep(5)
     
     try:
@@ -54,23 +52,15 @@ async def get_new_solana_tokens(page):
 
     all_links = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
     
-    # NOUVEAU : On filtre pour garder uniquement les vrais tokens (longueur de l'adresse > 30)
     token_rows = []
     for row in all_links:
         href = await row.get_attribute("href")
         if href:
             address = href.split("/solana/")[1].split("?")[0]
-            # Les adresses Solana font entre 32 et 44 caractères. On ignore les "dex/pumpswap"
             if len(address) >= 32:
                 token_rows.append(row)
                 
     print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
-    
-    # MODE DÉBOGAGE : On affiche les 3 premiers vrais tokens
-    for i in range(min(3, len(token_rows))):
-        debug_text = await token_rows[i].inner_text()
-        print(f"--- DEBUG TOKEN {i+1} ---")
-        print(debug_text.replace('\n', ' | ')[:400])
 
     tokens = []
     for row in token_rows[:50]:
@@ -79,6 +69,7 @@ async def get_new_solana_tokens(page):
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
+                # NOUVEAU : On récupère les liens dans toute la ligne
                 links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
                 has_socials = False
                 for link in links:
@@ -91,15 +82,18 @@ async def get_new_solana_tokens(page):
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
+                
+                # CORRECTION MAJEURE : Prendre TOUS les montants $ et garder les 2 derniers (Liq & Mcap)
                 dollar_strings = [s for s in text_parts if '$' in s and len(s) < 12]
                 
                 if len(dollar_strings) >= 2:
-                    liq_val = parse_dollar_value(dollar_strings[0])
-                    mcap_val = parse_dollar_value(dollar_strings[1])
+                    # Les deux derniers chiffres en dollars sont toujours Liquidité et Market Cap
+                    liq_val = parse_dollar_value(dollar_strings[-2])
+                    mcap_val = parse_dollar_value(dollar_strings[-1])
                     
                     if liq_val >= 20000 and mcap_val >= 100000:
-                        name_element = await row.query_selector("span.css-1aqamvn")
-                        name = await name_element.inner_text() if name_element else "Unknown"
+                        # On extrait le nom (généralement le 4ème élément de la ligne)
+                        name = text_parts[3] if len(text_parts) > 3 else "Unknown"
                         
                         print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
                         tokens.append({"name": name, "address": address})
