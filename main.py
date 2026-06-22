@@ -63,13 +63,13 @@ async def get_new_solana_tokens(page):
     print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
 
     tokens = []
-    for row in token_rows[:15]: # On remet à 15 tokens
+    for row in token_rows[:15]:
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                has_socials = True # Toujours désactivé pour le test
+                has_socials = True 
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
@@ -94,22 +94,30 @@ async def get_defi_score(page, address):
     print(f"[*] Checking De.fi for {address[:8]}...")
     url = f"https://de.fi/scanner/contract/{address}"
     try:
-        await page.goto(url, wait_until="load", timeout=30000)
-        await asyncio.sleep(3)
+        await page.goto(url, wait_until="load", timeout=60000)
+        
+        # TECHNIQUE STEALTH : Bouger la souris pour tromper l'anti-bot
+        await page.mouse.move(100, 100)
+        await page.mouse.move(200, 200)
+        await asyncio.sleep(2)
         
         title = await page.title()
         print(f"    -> Titre De.fi: {title}")
         
-        body_text = await page.evaluate("document.body.innerText.substring(0, 200)")
-        print(f"    -> Texte De.fi: {body_text}")
-        
-        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=25000)
+        # On attend jusqu'à 30 secondes que le score apparaisse
+        await page.wait_for_selector(DEFI_SCORE_SELECTOR, timeout=30000)
         score_element = await page.query_selector(DEFI_SCORE_SELECTOR)
         score_text = await score_element.inner_text()
         score = int(score_text.split("/")[0].strip())
         print(f"    -> Score: {score}/100")
         return score
     except Exception as e:
+        # Si ça échoue, on lit le texte pour voir ce que De.fi a affiché
+        try:
+            body_text = await page.evaluate("document.body.innerText.substring(0, 100)")
+            print(f"    -> Texte De.fi: {body_text}")
+        except:
+            print("    -> Page complètement vide.")
         print("    -> Could not find score.")
         return 0
 
@@ -120,14 +128,19 @@ async def main():
 
     async with async_playwright() as p:
         browser = await p.firefox.launch(headless=True)
+        
+        # TECHNIQUE STEALTH : Contexte réaliste
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US',
         )
         
         dex_page = await context.new_page()
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         defi_page = await context.new_page()
+        await defi_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
