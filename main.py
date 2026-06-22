@@ -1,3 +1,4 @@
+
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -43,7 +44,6 @@ async def get_new_solana_tokens(page):
     title = await page.title()
     print(f"[*] Titre de la page: {title}")
     
-    # NOUVEAU : On attend 5 secondes que le tableau se remplisse
     await asyncio.sleep(5)
     
     try:
@@ -52,17 +52,28 @@ async def get_new_solana_tokens(page):
         print("[-] DexScreener blocked the bot or layout changed.")
         return []
 
-    tokens = []
-    rows = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
-    print(f"[*] Nombre de lignes trouvées: {len(rows)}")
+    all_links = await page.query_selector_all(DEXSCREENER_ROW_SELECTOR)
     
-    # NOUVEAU : MODE DÉBOGAGE - On affiche le texte des 3 premières lignes
-    for i in range(min(3, len(rows))):
-        debug_text = await rows[i].inner_text()
-        print(f"--- DEBUG LIGNE {i+1} ---")
-        print(debug_text.replace('\n', ' | ')[:300])
+    # NOUVEAU : On filtre pour garder uniquement les vrais tokens (longueur de l'adresse > 30)
+    token_rows = []
+    for row in all_links:
+        href = await row.get_attribute("href")
+        if href:
+            address = href.split("/solana/")[1].split("?")[0]
+            # Les adresses Solana font entre 32 et 44 caractères. On ignore les "dex/pumpswap"
+            if len(address) >= 32:
+                token_rows.append(row)
+                
+    print(f"[*] Nombre de vrais tokens trouvés: {len(token_rows)}")
+    
+    # MODE DÉBOGAGE : On affiche les 3 premiers vrais tokens
+    for i in range(min(3, len(token_rows))):
+        debug_text = await token_rows[i].inner_text()
+        print(f"--- DEBUG TOKEN {i+1} ---")
+        print(debug_text.replace('\n', ' | ')[:400])
 
-    for row in rows[:50]:
+    tokens = []
+    for row in token_rows[:50]:
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
@@ -80,7 +91,6 @@ async def get_new_solana_tokens(page):
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
-                # CHANGÉ : Cherche n'importe quel texte contenant un '$'
                 dollar_strings = [s for s in text_parts if '$' in s and len(s) < 12]
                 
                 if len(dollar_strings) >= 2:
@@ -99,7 +109,7 @@ async def get_new_solana_tokens(page):
         except:
             continue
             
-    print(f"[+] Found {len(tokens)} tokens.")
+    print(f"[+] Found {len(tokens)} tokens valides.")
     return tokens
 
 async def get_defi_score(page, address):
