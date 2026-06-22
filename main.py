@@ -99,19 +99,27 @@ async def get_defi_score(page, address):
         # Bouger la souris et scroller pour forcer le chargement
         await page.mouse.move(100, 100)
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(10) # Laisser 10 secondes à De.fi pour analyser le contrat
+        # NOUVEAU : Attendre 15 secondes que De.fi analyse le contrat et affiche le score
+        await asyncio.sleep(15)
         
+        # NOUVEAU : Lire TOUT le texte de la page
         body_text = await page.evaluate("document.body.innerText")
         
-        # NOUVEAU : Recherche intelligente du score avec une Regex (cherche "75/100", "85 /100", etc.)
+        # NOUVEAU : Afficher 500 caractères autour du mot "Score" pour voir ce que De.fi affiche
+        score_index = body_text.lower().find("score")
+        if score_index != -1:
+            print(f"    -> Contexte du mot 'Score': ...{body_text[max(0, score_index-50):score_index+450]}...")
+        else:
+            print(f"    -> Mot 'Score' non trouvé. Texte (500 chars): {body_text[:500]}")
+
+        # Recherche du score avec une Regex (cherche "75/100", "85 /100", etc.)
         match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
         if match:
             score = int(match.group(1))
             print(f"    -> Score trouvé: {score}/100")
             return score
         else:
-            print(f"    -> Texte De.fi (200 chars): {body_text[:200]}")
-            print("    -> Could not find score.")
+            print("    -> Could not find score pattern (XX/100).")
             return 0
     except Exception as e:
         print(f"    -> Error: {e}")
@@ -148,7 +156,7 @@ async def main():
                 message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
                 await send_telegram_message(message)
             
-            # NOUVEAU : Attendre 10 secondes entre chaque token pour ne pas se faire bloquer par De.fi
+            # Attendre 10 secondes entre chaque token
             await asyncio.sleep(10)
             
         if not found_good_coin:
