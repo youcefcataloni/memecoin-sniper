@@ -22,37 +22,78 @@ async def send_telegram_message(message):
     except Exception as e:
         print(f"[-] Failed to send Telegram message: {e}")
 
-async def get_defi_score(page, address):
-    print(f"[*] Checking De.fi for {address[:8]}...")
-    url = f"https://de.fi/scanner/contract/{address}"
+def get_new_solana_tokens_via_api():
+    print("[*] Récupération des tokens via l'API DexScreener...")
     try:
-        await page.goto(url, wait_until="load", timeout=60000)
+        res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
+        profiles = res.json()
         
-        # Bouger la souris et scroller pour forcer le chargement
-        await page.mouse.move(100, 100)
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
+        print(f"[*] Trouvé {len(solana_profiles)} profils Solana récents.")
         
-        print("    -> Attente de 20 secondes pour le calcul de De.fi...")
-        await asyncio.sleep(20)
+        tokens = []
+        for p in solana_profiles[:50]:
+            address = p.get('tokenAddress')
+            if not address: continue
+            
+            data_res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}", timeout=10)
+            data = data_res.json()
+            pairs = data.get('pairs', [])
+            if not pairs: continue
+            
+            pair = pairs[0]
+            liq = pair.get('liquidity', {}).get('usd', 0)
+            mcap = pair.get('marketCap', 0)
+            name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
+            
+            if liq >= 20000 and mcap >= 100000:
+                print(f"    -> [GARDÉ] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
+                tokens.append({"name": name, "address": address})
+                
+            if len(tokens) >= 15:
+                break
+                
+        return tokens
+    except Exception as e:
+        print(f"[-] Erreur API DexScreener: {e}")
+        return []
+
+async def get_trench_radar_score(page, address):
+    print(f"[*] Checking Trench Radar for {address[:8]}...")
+    url = "https://www.trenchradar.net/app?chain=solana"
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
         
-        # Remonter au cas où le score est au milieu
-        await page.evaluate("window.scrollTo(0, 500)")
-        await asyncio.sleep(2)
-        
-        # Lire le code source HTML brut
-        html_content = await page.content()
-        
-        # Recherche du score dans le HTML (cherche "75/100", "85 /100", etc.)
-        match = re.search(r'(\d{1,3})\s*/\s*100', html_content)
-        if match:
-            score = int(match.group(1))
-            print(f"    -> Score trouvé: {score}/100")
-            return score
-        else:
-            # Si non trouvé, on affiche le texte visible de la page pour voir ce qu'il se passe
+        # Trouver la barre de recherche et taper l'adresse
+        search_input = await page.query_selector('input[type="text"], input[type="search"]')
+        if search_input:
+            await search_input.click()
+            await search_input.fill(address)
+            await page.keyboard.press("Enter")
+            print("    -> Recherche lancée, attente des résultats (10s)...")
+            await asyncio.sleep(10) # Attendre que le score se calcule
+            
+            # Prendre une capture d'écran pour vérifier
+            await page.screenshot(path="trench_screenshot.png", full_page=True)
+            print("    -> Capture d'écran sauvegardée.")
+            
+            # Lire le texte de la page
             body_text = await page.evaluate("document.body.innerText")
-            print(f"    -> Could not find score. Texte visible de la page (1500 chars):\n{body_text[:1500]}")
+            
+            # Chercher le score (ex: "85/100", "Score: 85")
+            match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+            if match:
+                score = int(match.group(1))
+                print(f"    -> Score trouvé: {score}/100")
+                return score
+            else:
+                print(f"    -> Could not find score. Texte (500 chars): {body_text[:500]}")
+                return 0
+        else:
+            print("    -> Barre de recherche introuvable.")
             return 0
+            
     except Exception as e:
         print(f"    -> Error: {e}")
         return 0
@@ -62,14 +103,13 @@ async def main():
     print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
-    # TEST : On force BONK et WIF pour voir si De.fi nous donne leur score
-    tokens = [
-        {"name": "BONK", "address": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"},
-        {"name": "WIF", "address": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"}
-    ]
+    tokens = get_new_solana_tokens_via_api()
+    
+    if not tokens:
+        print("[-] Aucun token trouvé via l'API.")
+        return
 
     async with async_playwright() as p:
-        # On utilise Chromium pour De.fi (avec xvfb pour tromper Cloudflare)
         browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -77,21 +117,20 @@ async def main():
             locale='en-US',
         )
         
-        defi_page = await context.new_page()
-        await defi_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        radar_page = await context.new_page()
+        await radar_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
         found_good_coin = False
         for token in tokens:
-            score = await get_defi_score(defi_page, token["address"])
+            score = await get_trench_radar_score(radar_page, token["address"])
             if score >= SCORE_THRESHOLD:
                 found_good_coin = True
                 message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
                 await send_telegram_message(message)
             
-            # Attendre 10 secondes entre chaque token
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
             
         if not found_good_coin:
             print("[-] No tokens met the 70+ threshold this run.")
