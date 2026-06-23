@@ -7,7 +7,7 @@ import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-SCORE_THRESHOLD = 70
+SCORE_THRESHOLD = 40 # CHANGÉ : On cherche un score entre 0 et 40%
 
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -32,7 +32,7 @@ def get_new_solana_tokens_via_api():
         print(f"[*] Trouvé {len(solana_profiles)} profils Solana récents.")
         
         tokens = []
-        for p in solana_profiles[:50]: 
+        for p in solana_profiles[:50]:
             address = p.get('tokenAddress')
             if not address: continue
             
@@ -58,45 +58,39 @@ def get_new_solana_tokens_via_api():
         print(f"[-] Erreur API DexScreener: {e}")
         return []
 
-async def get_trenchradar_score(page, address):
-    print(f"[*] Checking TrenchRadar for {address[:8]}...")
-    url = f"https://www.trenchradar.net/app?chain=solana"
+async def get_ave_score(page, address):
+    print(f"[*] Checking Ave.ai for {address[:8]}...")
+    # NOUVEAU : URL mobile de Ave.ai
+    url = f"https://m.ave.ai/token/solana/{address}"
     try:
-        await page.goto(url, wait_until="load", timeout=60000)
-        await asyncio.sleep(5)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(5) # Attendre 5 secondes que le score charge
         
-        search_input = await page.query_selector("input[type='text'], input[type='search'], input[placeholder*='search' i], input[placeholder*='address' i]")
-        
-        if search_input:
-            await search_input.fill("")
-            await search_input.fill(address)
-            await page.keyboard.press("Enter")
-            print("    -> Attente de 15 secondes pour le calcul...")
-            await asyncio.sleep(15)
-        else:
-            print("    -> Aucune barre de recherche trouvée.")
-            return 0
-            
         body_text = await page.evaluate("document.body.innerText")
         
-        # CORRECTION : TrenchRadar affiche le score comme "35 \n Trust Score"
-        # On cherche un chiffre de 1 à 3 nombres juste avant le mot "Trust Score"
-        match = re.search(r'(\d{1,3})\s*\n*Trust Score', body_text, re.IGNORECASE)
-        if match:
-            score = int(match.group(1))
-            print(f"    -> Score trouvé: {score}/100")
-            return score
-        else:
-            # Au cas où ils changent le format, on garde l'ancienne recherche
-            match_fallback = re.search(r'(\d{1,3})\s*/\s*100', body_text)
-            if match_fallback:
-                return int(match_fallback.group(1))
-                
-            print(f"    -> Score non trouvé. Texte (500 chars): {body_text[:500]}")
-            return 0
+        # NOUVEAU : Afficher le contexte autour du mot "score" ou "security" pour comprendre la page
+        score_index = body_text.lower().find("score")
+        if score_index == -1:
+            score_index = body_text.lower().find("security")
+            
+        if score_index != -1:
+            print(f"    -> Contexte trouvé: ...{body_text[max(0, score_index-50):score_index+100]}...")
+        
+        # Recherche de tous les nombres entre 0 et 100 dans le texte
+        numbers = re.findall(r'\b([0-9]{1,2})\b', body_text)
+        
+        # On cherche un nombre qui est <= 40
+        for num_str in numbers:
+            num = int(num_str)
+            if 0 <= num <= SCORE_THRESHOLD:
+                print(f"    -> Score trouvé (<= 40%): {num}%")
+                return num
+        
+        print("    -> Could not find score <= 40%.")
+        return 101 # Retourne 101 si non trouvé ou > 40%
     except Exception as e:
         print(f"    -> Error: {e}")
-        return 0
+        return 101
 
 async def main():
     delay = random.uniform(1, 10)
@@ -110,30 +104,34 @@ async def main():
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        # On utilise un navigateur normal (headless=True) car Ave.ai ne bloque pas les bots
+        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        
+        # NOUVEAU : On simule un iPhone pour que la page m.ave.ai s'affiche correctement
+        iphone_13 = p.devices["iPhone 13"]
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
-            locale='en-US',
+            **iphone_13,
+            locale='en-US'
         )
         
-        radar_page = await context.new_page()
-        await radar_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        ave_page = await context.new_page()
 
         print("🤖 Agent starting up...")
         
         found_good_coin = False
         for token in tokens:
-            score = await get_trenchradar_score(radar_page, token["address"])
-            if score >= SCORE_THRESHOLD:
+            score = await get_ave_score(ave_page, token["address"])
+            
+            # CHANGÉ : Si le score est entre 0 et 40
+            if score <= SCORE_THRESHOLD:
                 found_good_coin = True
-                message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
+                message = f"⚠️ <b>Low Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}%"
                 await send_telegram_message(message)
             
-            await asyncio.sleep(10)
+            await asyncio.sleep(3)
             
         if not found_good_coin:
-            print("[-] No tokens met the 70+ threshold this run.")
+            print("[-] No tokens met the <= 40% threshold this run.")
             
         await browser.close()
         print("✅ Agent finished task.")
