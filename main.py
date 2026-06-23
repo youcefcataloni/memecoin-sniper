@@ -65,32 +65,33 @@ async def get_trenchradar_score(page, address):
         await page.goto(url, wait_until="load", timeout=60000)
         await asyncio.sleep(5)
         
-        # TrenchRadar utilise probablement une barre de recherche pour vérifier un token
-        # On cherche un champ de texte (input)
         search_input = await page.query_selector("input[type='text'], input[type='search'], input[placeholder*='search' i], input[placeholder*='address' i]")
         
         if search_input:
-            print("    -> Barre de recherche trouvée. Saisie de l'adresse...")
             await search_input.fill("")
             await search_input.fill(address)
             await page.keyboard.press("Enter")
-            # Attendre que le score se calcule
             print("    -> Attente de 15 secondes pour le calcul...")
             await asyncio.sleep(15)
         else:
-            print("    -> Aucune barre de recherche trouvée. Lecture de la page...")
-            await asyncio.sleep(10)
+            print("    -> Aucune barre de recherche trouvée.")
+            return 0
             
-        # Lire le texte de la page
         body_text = await page.evaluate("document.body.innerText")
         
-        # Recherche du score (ex: 85/100, 70 / 100)
-        match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+        # CORRECTION : TrenchRadar affiche le score comme "35 \n Trust Score"
+        # On cherche un chiffre de 1 à 3 nombres juste avant le mot "Trust Score"
+        match = re.search(r'(\d{1,3})\s*\n*Trust Score', body_text, re.IGNORECASE)
         if match:
             score = int(match.group(1))
             print(f"    -> Score trouvé: {score}/100")
             return score
         else:
+            # Au cas où ils changent le format, on garde l'ancienne recherche
+            match_fallback = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+            if match_fallback:
+                return int(match_fallback.group(1))
+                
             print(f"    -> Score non trouvé. Texte (500 chars): {body_text[:500]}")
             return 0
     except Exception as e:
