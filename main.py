@@ -32,7 +32,7 @@ def get_new_solana_tokens_via_api():
         print(f"[*] Trouvé {len(solana_profiles)} profils Solana récents.")
         
         tokens = []
-        for p in solana_profiles[:50]:
+        for p in solana_profiles[:50]: 
             address = p.get('tokenAddress')
             if not address: continue
             
@@ -58,42 +58,41 @@ def get_new_solana_tokens_via_api():
         print(f"[-] Erreur API DexScreener: {e}")
         return []
 
-async def get_trench_radar_score(page, address):
-    print(f"[*] Checking Trench Radar for {address[:8]}...")
-    url = "https://www.trenchradar.net/app?chain=solana"
+async def get_trenchradar_score(page, address):
+    print(f"[*] Checking TrenchRadar for {address[:8]}...")
+    url = f"https://www.trenchradar.net/app?chain=solana"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        await page.goto(url, wait_until="load", timeout=60000)
+        await asyncio.sleep(5)
         
-        # Trouver la barre de recherche et taper l'adresse
-        search_input = await page.query_selector('input[type="text"], input[type="search"]')
+        # TrenchRadar utilise probablement une barre de recherche pour vérifier un token
+        # On cherche un champ de texte (input)
+        search_input = await page.query_selector("input[type='text'], input[type='search'], input[placeholder*='search' i], input[placeholder*='address' i]")
+        
         if search_input:
-            await search_input.click()
+            print("    -> Barre de recherche trouvée. Saisie de l'adresse...")
+            await search_input.fill("")
             await search_input.fill(address)
             await page.keyboard.press("Enter")
-            print("    -> Recherche lancée, attente des résultats (10s)...")
-            await asyncio.sleep(10) # Attendre que le score se calcule
-            
-            # Prendre une capture d'écran pour vérifier
-            await page.screenshot(path="trench_screenshot.png", full_page=True)
-            print("    -> Capture d'écran sauvegardée.")
-            
-            # Lire le texte de la page
-            body_text = await page.evaluate("document.body.innerText")
-            
-            # Chercher le score (ex: "85/100", "Score: 85")
-            match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
-            if match:
-                score = int(match.group(1))
-                print(f"    -> Score trouvé: {score}/100")
-                return score
-            else:
-                print(f"    -> Could not find score. Texte (500 chars): {body_text[:500]}")
-                return 0
+            # Attendre que le score se calcule
+            print("    -> Attente de 15 secondes pour le calcul...")
+            await asyncio.sleep(15)
         else:
-            print("    -> Barre de recherche introuvable.")
-            return 0
+            print("    -> Aucune barre de recherche trouvée. Lecture de la page...")
+            await asyncio.sleep(10)
             
+        # Lire le texte de la page
+        body_text = await page.evaluate("document.body.innerText")
+        
+        # Recherche du score (ex: 85/100, 70 / 100)
+        match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+        if match:
+            score = int(match.group(1))
+            print(f"    -> Score trouvé: {score}/100")
+            return score
+        else:
+            print(f"    -> Score non trouvé. Texte (500 chars): {body_text[:500]}")
+            return 0
     except Exception as e:
         print(f"    -> Error: {e}")
         return 0
@@ -124,13 +123,13 @@ async def main():
         
         found_good_coin = False
         for token in tokens:
-            score = await get_trench_radar_score(radar_page, token["address"])
+            score = await get_trenchradar_score(radar_page, token["address"])
             if score >= SCORE_THRESHOLD:
                 found_good_coin = True
                 message = f"🚀 <b>High Score Memecoin Found!</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\nScore: {score}/100"
                 await send_telegram_message(message)
             
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
             
         if not found_good_coin:
             print("[-] No tokens met the 70+ threshold this run.")
