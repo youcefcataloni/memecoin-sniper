@@ -1,4 +1,3 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -83,28 +82,25 @@ async def check_ave_ai(page, token):
         
     body_text = await page.evaluate("document.body.innerText")
     
-    # NOUVEAU : On cherche spécifiquement le score de risque (ex: "Risk Assessment 80%" ou "80% High Risk")
-    # On cherche un pourcentage qui est près du mot "Risk" ou "Assessment"
-    risk_match = re.search(r'((?:Risk Assessment|High Risk|Medium Risk|Low Risk)\s*\n?\s*(\d{1,3})%)|((\d{1,3})%\s*(?:High Risk|Medium Risk|Low Risk))', body_text, re.IGNORECASE)
+    # NOUVEAU : On lit le nombre de Danger, Warning et les Taxes
+    danger_match = re.search(r'Danger\s*(\d+)', body_text)
+    danger_count = int(danger_match.group(1)) if danger_match else 0
     
-    if risk_match:
-        # On extrait le chiffre trouvé
-        score_str = risk_match.group(2) or risk_match.group(4)
-        risk_score = int(score_str)
-        print(f"    -> Score de Risque détecté: {risk_score}%")
-        
-        if 0 <= risk_score <= 40:
-            return True
-        else:
-            return False
+    warning_match = re.search(r'Warning\s*(\d+)', body_text)
+    warning_count = int(warning_match.group(1)) if warning_match else 0
+    
+    buy_tax_match = re.search(r'Buy Tax\s*(\d+)%', body_text)
+    buy_tax = int(buy_tax_match.group(1)) if buy_tax_match else 0
+    
+    sell_tax_match = re.search(r'Sell Tax\s*(\d+)%', body_text)
+    sell_tax = int(sell_tax_match.group(1)) if sell_tax_match else 0
+    
+    print(f"    -> Danger: {danger_count} | Warning: {warning_count} | Buy Tax: {buy_tax}% | Sell Tax: {sell_tax}%")
+    
+    # RÈGLE : Si 0 Danger, 0 ou 1 Warning, et Taxes <= 5%, c'est un token à faible risque (0-40%)
+    if danger_count == 0 and warning_count <= 1 and buy_tax <= 5 and sell_tax <= 5:
+        return True
     else:
-        # Si toujours pas trouvé, on affiche le texte autour de "%" pour debug
-        print("    -> Mot 'Risk' + '%' non trouvé. Voici le texte autour de '%' :")
-        percent_index = body_text.find("%")
-        if percent_index != -1:
-            print(f"       Contexte: ...{body_text[max(0, percent_index-50):percent_index+50]}...")
-        else:
-            print("       Aucun '%' trouvé dans la page.")
         return False
 
 async def main():
@@ -130,12 +126,12 @@ async def main():
             is_safe = await check_ave_ai(page, token)
             if is_safe:
                 found_good_coin = True
-                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
+                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: 0 Danger, Taxes 0% sur Ave.ai"
                 await send_telegram_message(message)
             await asyncio.sleep(2)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
+            print("[-] Aucun token n'a passé le filtre de sécurité cette fois.")
             
         await browser.close()
         print("✅ Agent finished task.")
