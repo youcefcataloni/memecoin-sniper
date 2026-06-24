@@ -1,3 +1,4 @@
+
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -54,24 +55,19 @@ def get_new_solana_tokens_via_api():
 async def check_ave_ai(page, token):
     print(f"[*] Vérification Ave.ai pour {token['name']}...")
     
-    # 1. Aller sur la page de scan
     await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
     await asyncio.sleep(3)
     
-    # NOUVEAU : Forcer la fermeture du pop-up avec JavaScript
     try:
         await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
-        print("[+] Pop-up forcé de fermer.")
     except:
         pass
         
-    # 2. Trouver la barre de recherche et taper l'adresse
     try:
         search_input = page.get_by_placeholder("Please enter contract address")
         await search_input.wait_for(timeout=10000)
         await search_input.fill(token['address'])
         
-        # 3. Cliquer sur le bouton bleu "Check" en utilisant sa classe exacte
         check_button = page.locator("button.submit-button")
         await check_button.click()
         
@@ -79,30 +75,36 @@ async def check_ave_ai(page, token):
         print(f"    -> Erreur lors de la recherche: {e}")
         return False
         
-    # 4. Attendre que le résultat charge (on attend que "Buy Tax" apparaisse)
     try:
         await page.wait_for_selector("text=Buy Tax", timeout=15000)
     except:
         print("    -> Les résultats n'ont pas chargé à temps.")
         return False
         
-    # 5. Lire le texte de la page
     body_text = await page.evaluate("document.body.innerText")
     
-    # 6. Extraire le pourcentage de Risk (ex: "80%" ou "0%")
-    risk_match = re.search(r'(\d{1,3})%\s*(High Risk|Medium Risk|Low Risk|Risk Assessment)?', body_text)
+    # NOUVEAU : On cherche spécifiquement le score de risque (ex: "Risk Assessment 80%" ou "80% High Risk")
+    # On cherche un pourcentage qui est près du mot "Risk" ou "Assessment"
+    risk_match = re.search(r'((?:Risk Assessment|High Risk|Medium Risk|Low Risk)\s*\n?\s*(\d{1,3})%)|((\d{1,3})%\s*(?:High Risk|Medium Risk|Low Risk))', body_text, re.IGNORECASE)
     
     if risk_match:
-        risk_score = int(risk_match.group(1))
+        # On extrait le chiffre trouvé
+        score_str = risk_match.group(2) or risk_match.group(4)
+        risk_score = int(score_str)
         print(f"    -> Score de Risque détecté: {risk_score}%")
         
-        # RÈGLE: Si le score est entre 0% et 40%
         if 0 <= risk_score <= 40:
             return True
         else:
             return False
     else:
-        print("    -> Pourcentage non trouvé dans la page.")
+        # Si toujours pas trouvé, on affiche le texte autour de "%" pour debug
+        print("    -> Mot 'Risk' + '%' non trouvé. Voici le texte autour de '%' :")
+        percent_index = body_text.find("%")
+        if percent_index != -1:
+            print(f"       Contexte: ...{body_text[max(0, percent_index-50):percent_index+50]}...")
+        else:
+            print("       Aucun '%' trouvé dans la page.")
         return False
 
 async def main():
