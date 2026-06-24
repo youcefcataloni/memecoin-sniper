@@ -19,59 +19,99 @@ async def send_telegram_message(message):
     except:
         pass
 
-def get_new_solana_tokens_via_api():
-    print("[*] Récupération des tokens via l'API DexScreener...")
+def parse_dollar_value(val_str):
     try:
-        res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
-        profiles = res.json()
-        solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
-        
-        tokens = []
-        for p in solana_profiles[:200]: # On scanne 200 tokens
-            address = p.get('tokenAddress')
-            if not address: continue
-            
-            data_res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}", timeout=10)
-            data = data_res.json()
-            pairs = data.get('pairs', [])
-            if not pairs: continue
-            
-            pair = max(pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0))
-            liq = pair.get('liquidity', {}).get('usd', 0)
-            mcap = pair.get('marketCap', 0) or pair.get('fdv', 0)
-            name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
-            
-            if liq >= 20000 and mcap >= 100000:
-                print(f"    -> [GARDÉ] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
-                tokens.append({"name": name, "address": address})
-            if len(tokens) >= 15:
-                break
-        return tokens
-    except Exception as e:
-        print(f"[-] Erreur API DexScreener: {e}")
+        val_str = val_str.replace('$', '').replace(',', '').strip()
+        if 'M' in val_str:
+            return float(val_str.replace('M', '')) * 1_000_000
+        elif 'K' in val_str:
+            return float(val_str.replace('K', '')) * 1_000
+        else:
+            return float(val_str)
+    except:
+        return 0
+
+async def get_new_solana_tokens(page):
+    print("[*] Scraping DexScreener...")
+    await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(5) # Laisser le tableau charger
+    
+    try:
+        # On attend qu'un lien de token apparaisse
+        await page.wait_for_selector("a[href*='/solana/']", timeout=20000)
+    except:
+        print("[-] DexScreener bloqué ou layout changé.")
         return []
+
+    all_links = await page.query_selector_all("a[href*='/solana/']")
+    
+    token_rows = []
+    for row in all_links:
+        href = await row.get_attribute("href")
+        if href:
+            address = href.split("/solana/")[1].split("?")[0]
+            if len(address) >= 32: # Filtrer les vrais tokens
+                token_rows.append(row)
+                
+    print(f"[*] Nombre de tokens trouvés sur la page: {len(token_rows)}")
+
+    tokens = []
+    for row in token_rows[:50]: # On prend les 50 premiers
+        try:
+            href = await row.get_attribute("href")
+            if href and "/solana/" in href:
+                address = href.split("/solana/")[1].split("?")[0]
+                
+                # Vérifier les réseaux sociaux
+                links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
+                has_socials = False
+                for link in links:
+                    if 'twitter.com' in link or 'x.com' in link or 't.me' in link or 'telegram.me' in link or ('http' in link and 'dexscreener.com' not in link):
+                        has_socials = True
+                        break
+                
+                if not has_socials:
+                    continue
+                
+                row_text = await row.inner_text()
+                text_parts = row_text.split('\n')
+                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 15]
+                
+                if len(dollar_strings) >= 2:
+                    liq_val = parse_dollar_value(dollar_strings[-2])
+                    mcap_val = parse_dollar_value(dollar_strings[-1])
+                    
+                    if liq_val >= 20000 and mcap_val >= 100000:
+                        name = text_parts[1] if len(text_parts) > 1 else "Unknown"
+                        
+                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
+                        tokens.append({"name": name, "address": address})
+                        
+                        if len(tokens) >= 15:
+                            break 
+        except:
+            continue
+            
+    print(f"[+] Found {len(tokens)} tokens valides.")
+    return tokens
 
 async def check_ave_ai(page, token):
     print(f"[*] Vérification Ave.ai pour {token['name']}...")
     
     captured_score = None
     
-    # NOUVEAU : Fonction qui écoute toutes les communications de données
     async def handle_response(response):
         nonlocal captured_score
         if response.request.resource_type in ["xhr", "fetch"]:
             try:
                 body = await response.text()
-                # Si la communication contient "risk_score" ET l'adresse du token
                 if "risk_score" in body and token['address'].lower() in body.lower():
-                    # On extrait le chiffre juste après "risk_score"
                     match = re.search(r'"risk_score":\s*(\d+)', body)
                     if match:
                         captured_score = int(match.group(1))
             except:
                 pass
 
-    # On attache l'écouteur à la page
     page.on("response", handle_response)
 
     try:
@@ -90,15 +130,11 @@ async def check_ave_ai(page, token):
         check_button = page.locator("button.submit-button")
         await check_button.click()
         
-        print("    -> Attente de l'interception du score (10s)...")
         await asyncio.sleep(10)
-        
-        # On détache l'écouteur
         page.remove_listener("response", handle_response)
         
         if captured_score is not None:
             print(f"    -> Score de Risque officiel capturé: {captured_score}%")
-            # RÈGLE : Si le score est entre 0% et 40%
             if 0 <= captured_score <= 40:
                 return True
             else:
@@ -109,7 +145,6 @@ async def check_ave_ai(page, token):
             
     except Exception as e:
         page.remove_listener("response", handle_response)
-        print(f"    -> Erreur: {e}")
         return False
 
 async def main():
@@ -117,22 +152,30 @@ async def main():
     print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
-    tokens = get_new_solana_tokens_via_api()
-    if not tokens:
-        print("[-] Aucun token trouvé.")
-        return
-
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        # On utilise headless=False et xvfb pour tromper Cloudflare sur DexScreener
+        browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US'
+        )
+        
+        dex_page = await context.new_page()
+        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        # Page iPhone pour Ave.ai
         iphone_13 = p.devices["iPhone 13"]
-        context = await browser.new_context(**iphone_13, locale='en-US')
-        page = await context.new_page()
+        ave_context = await browser.new_context(**iphone_13, locale='en-US')
+        ave_page = await ave_context.new_page()
 
         print("🤖 Agent starting up...")
         
+        tokens = await get_new_solana_tokens(dex_page)
+        
         found_good_coin = False
         for token in tokens:
-            is_safe = await check_ave_ai(page, token)
+            is_safe = await check_ave_ai(ave_page, token)
             if is_safe:
                 found_good_coin = True
                 message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
