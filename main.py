@@ -56,24 +56,23 @@ async def check_ave_ai(page, token):
     
     # 1. Aller sur la page de scan
     await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+    await asyncio.sleep(3)
     
-    # Fermer le pop-up de disclaimer s'il existe
+    # NOUVEAU : Forcer la fermeture du pop-up avec JavaScript
     try:
-        confirm_button = page.get_by_role("button", name="Confirm")
-        await confirm_button.click(timeout=3000)
-        await asyncio.sleep(2)
+        await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
+        print("[+] Pop-up forcé de fermer.")
     except:
         pass
         
     # 2. Trouver la barre de recherche et taper l'adresse
     try:
-        # On cherche le champ avec le placeholder "Please enter contract address"
         search_input = page.get_by_placeholder("Please enter contract address")
         await search_input.wait_for(timeout=10000)
         await search_input.fill(token['address'])
         
-        # 3. Cliquer sur le bouton bleu "Check"
-        check_button = page.locator("button:has-text('Check')").last
+        # 3. Cliquer sur le bouton bleu "Check" en utilisant sa classe exacte
+        check_button = page.locator("button.submit-button")
         await check_button.click()
         
     except Exception as e:
@@ -91,7 +90,6 @@ async def check_ave_ai(page, token):
     body_text = await page.evaluate("document.body.innerText")
     
     # 6. Extraire le pourcentage de Risk (ex: "80%" ou "0%")
-    # On cherche un nombre suivi du symbole %
     risk_match = re.search(r'(\d{1,3})%\s*(High Risk|Medium Risk|Low Risk|Risk Assessment)?', body_text)
     
     if risk_match:
