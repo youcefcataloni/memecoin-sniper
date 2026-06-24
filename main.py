@@ -1,9 +1,9 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
 import os
 import random
+import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -15,6 +15,7 @@ async def send_telegram_message(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload, timeout=10)
+        print("[+] Message Telegram envoyé.")
     except:
         pass
 
@@ -41,73 +42,103 @@ def get_new_solana_tokens_via_api():
             name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
             
             if liq >= 20000 and mcap >= 100000:
+                print(f"    -> [GARDÉ] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
                 tokens.append({"name": name, "address": address})
-            if len(tokens) >= 1:
+            if len(tokens) >= 15:
                 break
         return tokens
     except Exception as e:
         print(f"[-] Erreur API DexScreener: {e}")
         return []
 
+async def check_ave_ai(page, token):
+    print(f"[*] Vérification Ave.ai pour {token['name']}...")
+    
+    # 1. Aller sur la page de scan
+    await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+    
+    # Fermer le pop-up de disclaimer s'il existe
+    try:
+        confirm_button = page.get_by_role("button", name="Confirm")
+        await confirm_button.click(timeout=3000)
+        await asyncio.sleep(2)
+    except:
+        pass
+        
+    # 2. Trouver la barre de recherche et taper l'adresse
+    try:
+        # On cherche le champ avec le placeholder "Please enter contract address"
+        search_input = page.get_by_placeholder("Please enter contract address")
+        await search_input.wait_for(timeout=10000)
+        await search_input.fill(token['address'])
+        
+        # 3. Cliquer sur le bouton bleu "Check"
+        check_button = page.locator("button:has-text('Check')").last
+        await check_button.click()
+        
+    except Exception as e:
+        print(f"    -> Erreur lors de la recherche: {e}")
+        return False
+        
+    # 4. Attendre que le résultat charge (on attend que "Buy Tax" apparaisse)
+    try:
+        await page.wait_for_selector("text=Buy Tax", timeout=15000)
+    except:
+        print("    -> Les résultats n'ont pas chargé à temps.")
+        return False
+        
+    # 5. Lire le texte de la page
+    body_text = await page.evaluate("document.body.innerText")
+    
+    # 6. Extraire le pourcentage de Risk (ex: "80%" ou "0%")
+    # On cherche un nombre suivi du symbole %
+    risk_match = re.search(r'(\d{1,3})%\s*(High Risk|Medium Risk|Low Risk|Risk Assessment)?', body_text)
+    
+    if risk_match:
+        risk_score = int(risk_match.group(1))
+        print(f"    -> Score de Risque détecté: {risk_score}%")
+        
+        # RÈGLE: Si le score est entre 0% et 40%
+        if 0 <= risk_score <= 40:
+            return True
+        else:
+            return False
+    else:
+        print("    -> Pourcentage non trouvé dans la page.")
+        return False
+
 async def main():
+    delay = random.uniform(1, 5)
+    print(f"[*] Waiting for {delay:.2f} seconds...")
+    await asyncio.sleep(delay)
+
     tokens = get_new_solana_tokens_via_api()
     if not tokens:
         print("[-] Aucun token trouvé.")
         return
 
-    token = tokens[0]
-    print(f"[*] Test de recherche manuelle sur Ave.ai pour {token['name']} ({token['address'][:8]}...)")
-
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        
-        # On simule un iPhone pour que la page m.ave.ai s'affiche correctement
         iphone_13 = p.devices["iPhone 13"]
         context = await browser.new_context(**iphone_13, locale='en-US')
         page = await context.new_page()
 
-        try:
-            # 1. Aller sur la page de scan
-            await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+        print("🤖 Agent starting up...")
+        
+        found_good_coin = False
+        for token in tokens:
+            is_safe = await check_ave_ai(page, token)
+            if is_safe:
+                found_good_coin = True
+                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
+                await send_telegram_message(message)
+            await asyncio.sleep(2)
             
-            # Fermer le pop-up de disclaimer s'il existe
-            try:
-                confirm_button = page.get_by_role("button", name="Confirm")
-                await confirm_button.click(timeout=3000)
-                print("[+] Pop-up fermé.")
-                await asyncio.sleep(2)
-            except:
-                print("[*] Pas de pop-up.")
-            
-            # 2. Trouver la barre de recherche et taper l'adresse
-            print("[*] Recherche de la barre de recherche...")
-            # On cherche un input de type texte ou search
-            search_input = page.locator("input[type='text']").first
-            await search_input.wait_for(timeout=10000)
-            await search_input.fill(token['address'])
-            print(f"[+] Adresse '{token['address'][:8]}...' tapée.")
-            
-            # 3. Appuyer sur Entrée pour lancer la recherche
-            await page.keyboard.press("Enter")
-            print("[*] Touche Entrée pressée. Attente des résultats...")
-            
-            # 4. Attendre que la page charge le résultat
-            await asyncio.sleep(8)
-            
-            # 5. Prendre une capture d'écran du résultat
-            await page.screenshot(path="ave_search_result.png", full_page=True)
-            print("[+] Capture d'écran sauvegardée sous ave_search_result.png")
-            
-            # 6. Afficher le texte de la page pour voir où est le score
-            body_text = await page.evaluate("document.body.innerText")
-            print("--- TEXTE DU RÉSULTAT ---")
-            print(body_text[:2000])
-            print("-------------------------")
-            
-        except Exception as e:
-            print(f"Error: {e}")
+        if not found_good_coin:
+            print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
             
         await browser.close()
+        print("✅ Agent finished task.")
 
 if __name__ == "__main__":
     asyncio.run(main())
