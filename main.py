@@ -1,3 +1,4 @@
+
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -41,7 +42,7 @@ def get_new_solana_tokens_via_api():
             
             if liq >= 20000 and mcap >= 100000:
                 tokens.append({"name": name, "address": address})
-            if len(tokens) >= 1: # On prend juste 1 token pour le test
+            if len(tokens) >= 1:
                 break
         return tokens
     except Exception as e:
@@ -55,28 +56,53 @@ async def main():
         return
 
     token = tokens[0]
-    print(f"[*] Checking Ave.ai for {token['name']} ({token['address'][:8]}...)")
-    url = f"https://m.ave.ai/token/solana/{token['address']}"
+    print(f"[*] Test de recherche manuelle sur Ave.ai pour {token['name']} ({token['address'][:8]}...)")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        
+        # On simule un iPhone pour que la page m.ave.ai s'affiche correctement
         iphone_13 = p.devices["iPhone 13"]
         context = await browser.new_context(**iphone_13, locale='en-US')
         page = await context.new_page()
 
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(5)
+            # 1. Aller sur la page de scan
+            await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
             
-            # Prendre une capture d'écran de la page entière
-            await page.screenshot(path="ave_screenshot.png", full_page=True)
-            print("[+] Capture d'écran sauvegardée sous ave_screenshot.png")
+            # Fermer le pop-up de disclaimer s'il existe
+            try:
+                confirm_button = page.get_by_role("button", name="Confirm")
+                await confirm_button.click(timeout=3000)
+                print("[+] Pop-up fermé.")
+                await asyncio.sleep(2)
+            except:
+                print("[*] Pas de pop-up.")
             
-            # Afficher tout le texte de la page pour qu'on voit où est le score
+            # 2. Trouver la barre de recherche et taper l'adresse
+            print("[*] Recherche de la barre de recherche...")
+            # On cherche un input de type texte ou search
+            search_input = page.locator("input[type='text']").first
+            await search_input.wait_for(timeout=10000)
+            await search_input.fill(token['address'])
+            print(f"[+] Adresse '{token['address'][:8]}...' tapée.")
+            
+            # 3. Appuyer sur Entrée pour lancer la recherche
+            await page.keyboard.press("Enter")
+            print("[*] Touche Entrée pressée. Attente des résultats...")
+            
+            # 4. Attendre que la page charge le résultat
+            await asyncio.sleep(8)
+            
+            # 5. Prendre une capture d'écran du résultat
+            await page.screenshot(path="ave_search_result.png", full_page=True)
+            print("[+] Capture d'écran sauvegardée sous ave_search_result.png")
+            
+            # 6. Afficher le texte de la page pour voir où est le score
             body_text = await page.evaluate("document.body.innerText")
-            print("--- TEXTE DE LA PAGE AVE.AI ---")
-            print(body_text)
-            print("--------------------------------")
+            print("--- TEXTE DU RÉSULTAT ---")
+            print(body_text[:2000])
+            print("-------------------------")
             
         except Exception as e:
             print(f"Error: {e}")
