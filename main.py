@@ -32,12 +32,11 @@ def parse_dollar_value(val_str):
         return 0
 
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener...")
+    print("[*] Scraping DexScreener (Firefox)...")
     await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(5) # Laisser le tableau charger
+    await asyncio.sleep(5)
     
     try:
-        # On attend qu'un lien de token apparaisse
         await page.wait_for_selector("a[href*='/solana/']", timeout=20000)
     except:
         print("[-] DexScreener bloqué ou layout changé.")
@@ -50,19 +49,18 @@ async def get_new_solana_tokens(page):
         href = await row.get_attribute("href")
         if href:
             address = href.split("/solana/")[1].split("?")[0]
-            if len(address) >= 32: # Filtrer les vrais tokens
+            if len(address) >= 32:
                 token_rows.append(row)
                 
     print(f"[*] Nombre de tokens trouvés sur la page: {len(token_rows)}")
 
     tokens = []
-    for row in token_rows[:50]: # On prend les 50 premiers
+    for row in token_rows[:50]:
         try:
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                # Vérifier les réseaux sociaux
                 links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
                 has_socials = False
                 for link in links:
@@ -153,25 +151,32 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # On utilise headless=False et xvfb pour tromper Cloudflare sur DexScreener
-        browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # 1. Firefox pour DexScreener (passe Cloudflare)
+        print("[*] Lancement de Firefox pour DexScreener...")
+        ff_browser = await p.firefox.launch(headless=True)
+        ff_context = await ff_browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
             viewport={'width': 1920, 'height': 1080},
             locale='en-US'
         )
-        
-        dex_page = await context.new_page()
+        dex_page = await ff_context.new_page()
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        # Page iPhone pour Ave.ai
+        tokens = await get_new_solana_tokens(dex_page)
+        await ff_browser.close()
+        
+        if not tokens:
+            print("[-] Aucun token trouvé.")
+            return
+
+        # 2. Chromium pour Ave.ai (interception parfaite de l'API)
+        print("[*] Lancement de Chromium pour Ave.ai...")
+        chr_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         iphone_13 = p.devices["iPhone 13"]
-        ave_context = await browser.new_context(**iphone_13, locale='en-US')
+        ave_context = await chr_browser.new_context(**iphone_13, locale='en-US')
         ave_page = await ave_context.new_page()
 
         print("🤖 Agent starting up...")
-        
-        tokens = await get_new_solana_tokens(dex_page)
         
         found_good_coin = False
         for token in tokens:
@@ -185,7 +190,7 @@ async def main():
         if not found_good_coin:
             print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
             
-        await browser.close()
+        await chr_browser.close()
         print("✅ Agent finished task.")
 
 if __name__ == "__main__":
