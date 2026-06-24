@@ -1,4 +1,4 @@
-import asyncio
+      import asyncio
 from playwright.async_api import async_playwright
 import requests
 import os
@@ -61,15 +61,8 @@ async def get_new_solana_tokens(page):
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
                 
-                links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
-                has_socials = False
-                for link in links:
-                    if 'twitter.com' in link or 'x.com' in link or 't.me' in link or 'telegram.me' in link or ('http' in link and 'dexscreener.com' not in link):
-                        has_socials = True
-                        break
-                
-                if not has_socials:
-                    continue
+                # DÉSACTIVÉ : Le filtre social strict (DexScreener cache les liens dans le DOM)
+                has_socials = True 
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
@@ -151,7 +144,7 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # 1. Firefox pour DexScreener (passe Cloudflare)
+        # 1. Firefox pour DexScreener
         print("[*] Lancement de Firefox pour DexScreener...")
         ff_browser = await p.firefox.launch(headless=True)
         ff_context = await ff_browser.new_context(
@@ -169,7 +162,7 @@ async def main():
             print("[-] Aucun token trouvé.")
             return
 
-        # 2. Chromium pour Ave.ai (interception parfaite de l'API)
+        # 2. Chromium pour Ave.ai
         print("[*] Lancement de Chromium pour Ave.ai...")
         chr_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         iphone_13 = p.devices["iPhone 13"]
