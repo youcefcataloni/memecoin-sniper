@@ -8,17 +8,6 @@ import re
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-async def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-        print("[+] Message Telegram envoyé.")
-    except:
-        pass
-
 def parse_dollar_value(val_str):
     try:
         val_str = val_str.replace('$', '').replace(',', '').strip()
@@ -39,7 +28,6 @@ async def get_new_solana_tokens(page):
     try:
         await page.wait_for_selector("a[href*='/solana/']", timeout=20000)
     except:
-        print("[-] DexScreener bloqué ou layout changé.")
         return []
 
     all_links = await page.query_selector_all("a[href*='/solana/']")
@@ -51,8 +39,6 @@ async def get_new_solana_tokens(page):
             address = href.split("/solana/")[1].split("?")[0]
             if len(address) >= 32:
                 token_rows.append(row)
-                
-    print(f"[*] Nombre de tokens trouvés sur la page: {len(token_rows)}")
 
     tokens = []
     for row in token_rows[:50]:
@@ -60,9 +46,6 @@ async def get_new_solana_tokens(page):
             href = await row.get_attribute("href")
             if href and "/solana/" in href:
                 address = href.split("/solana/")[1].split("?")[0]
-                
-                # DÉSACTIVÉ : Le filtre social strict (DexScreener cache les liens dans le DOM)
-                has_socials = True 
                 
                 row_text = await row.inner_text()
                 text_parts = row_text.split('\n')
@@ -74,75 +57,14 @@ async def get_new_solana_tokens(page):
                     
                     if liq_val >= 20000 and mcap_val >= 100000:
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
-                        
-                        print(f"    -> [GARDÉ] {name} | Liq: ${liq_val:,.0f} | Mcap: ${mcap_val:,.0f}")
                         tokens.append({"name": name, "address": address})
-                        
-                        if len(tokens) >= 15:
+                        if len(tokens) >= 1: # Juste 1 pour le test
                             break 
         except:
             continue
-            
-    print(f"[+] Found {len(tokens)} tokens valides.")
     return tokens
 
-async def check_ave_ai(page, token):
-    print(f"[*] Vérification Ave.ai pour {token['name']}...")
-    
-    captured_score = None
-    
-    async def handle_response(response):
-        nonlocal captured_score
-        if response.request.resource_type in ["xhr", "fetch"]:
-            try:
-                body = await response.text()
-                if "risk_score" in body and token['address'].lower() in body.lower():
-                    match = re.search(r'"risk_score":\s*(\d+)', body)
-                    if match:
-                        captured_score = int(match.group(1))
-            except:
-                pass
-
-    page.on("response", handle_response)
-
-    try:
-        await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
-        await asyncio.sleep(3)
-        
-        try:
-            await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
-        except:
-            pass
-            
-        search_input = page.get_by_placeholder("Please enter contract address")
-        await search_input.wait_for(timeout=10000)
-        await search_input.fill(token['address'])
-        
-        check_button = page.locator("button.submit-button")
-        await check_button.click()
-        
-        await asyncio.sleep(10)
-        page.remove_listener("response", handle_response)
-        
-        if captured_score is not None:
-            print(f"    -> Score de Risque officiel capturé: {captured_score}%")
-            if 0 <= captured_score <= 40:
-                return True
-            else:
-                return False
-        else:
-            print("    -> L'API n'a pas renvoyé de risk_score pour ce token.")
-            return False
-            
-    except Exception as e:
-        page.remove_listener("response", handle_response)
-        return False
-
 async def main():
-    delay = random.uniform(1, 5)
-    print(f"[*] Waiting for {delay:.2f} seconds...")
-    await asyncio.sleep(delay)
-
     async with async_playwright() as p:
         # 1. Firefox pour DexScreener
         print("[*] Lancement de Firefox pour DexScreener...")
@@ -162,29 +84,54 @@ async def main():
             print("[-] Aucun token trouvé.")
             return
 
+        token = tokens[0]
+        print(f"[*] Test de l'API Ave.ai pour {token['name']} ({token['address'][:8]}...)")
+
         # 2. Chromium pour Ave.ai
-        print("[*] Lancement de Chromium pour Ave.ai...")
         chr_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         iphone_13 = p.devices["iPhone 13"]
         ave_context = await chr_browser.new_context(**iphone_13, locale='en-US')
-        ave_page = await ave_context.new_page()
+        page = await ave_context.new_page()
 
-        print("🤖 Agent starting up...")
-        
-        found_good_coin = False
-        for token in tokens:
-            is_safe = await check_ave_ai(ave_page, token)
-            if is_safe:
-                found_good_coin = True
-                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
-                await send_telegram_message(message)
-            await asyncio.sleep(2)
+        # NOUVEAU : Intercepter les communications et afficher l'URL
+        async def handle_response(response):
+            url = response.url
+            # Si l'URL de l'API contient l'adresse du token, c'est la bonne porte !
+            if token['address'].lower() in url.lower() and response.request.resource_type in ["xhr", "fetch"]:
+                print(f"\n--- API TROUVÉE POUR LE TOKEN ---")
+                print(f"URL: {url}")
+                try:
+                    body = await response.text()
+                    print(f"Contenu: {body[:1000]}")
+                except:
+                    pass
+                print(f"--------------------------------\n")
+
+        page.on("response", handle_response)
+
+        try:
+            await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(3)
             
-        if not found_good_coin:
-            print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
+            try:
+                await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
+            except:
+                pass
+                
+            search_input = page.get_by_placeholder("Please enter contract address")
+            await search_input.wait_for(timeout=10000)
+            await search_input.fill(token['address'])
+            
+            check_button = page.locator("button.submit-button")
+            await check_button.click()
+            
+            print("[*] Attente de 15 secondes pour intercepter l'API...")
+            await asyncio.sleep(15)
+                
+        except Exception as e:
+            print(f"Error: {e}")
             
         await chr_browser.close()
-        print("✅ Agent finished task.")
 
 if __name__ == "__main__":
     asyncio.run(main())
