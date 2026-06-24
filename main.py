@@ -8,6 +8,17 @@ import re
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+async def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+        print("[+] Message Telegram envoyé.")
+    except:
+        pass
+
 def get_new_solana_tokens_via_api():
     print("[*] Récupération des tokens via l'API DexScreener...")
     try:
@@ -16,7 +27,7 @@ def get_new_solana_tokens_via_api():
         solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
         
         tokens = []
-        for p in solana_profiles[:50]:
+        for p in solana_profiles[:200]: # On scanne 200 tokens
             address = p.get('tokenAddress')
             if not address: continue
             
@@ -31,22 +42,85 @@ def get_new_solana_tokens_via_api():
             name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
             
             if liq >= 20000 and mcap >= 100000:
+                print(f"    -> [GARDÉ] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
                 tokens.append({"name": name, "address": address})
-            if len(tokens) >= 1: # Juste 1 pour le test
+            if len(tokens) >= 15:
                 break
         return tokens
     except Exception as e:
         print(f"[-] Erreur API DexScreener: {e}")
         return []
 
+async def check_ave_ai(page, token):
+    print(f"[*] Vérification Ave.ai pour {token['name']}...")
+    
+    captured_score = None
+    
+    # NOUVEAU : Fonction qui écoute toutes les communications de données
+    async def handle_response(response):
+        nonlocal captured_score
+        if response.request.resource_type in ["xhr", "fetch"]:
+            try:
+                body = await response.text()
+                # Si la communication contient "risk_score" ET l'adresse du token
+                if "risk_score" in body and token['address'].lower() in body.lower():
+                    # On extrait le chiffre juste après "risk_score"
+                    match = re.search(r'"risk_score":\s*(\d+)', body)
+                    if match:
+                        captured_score = int(match.group(1))
+            except:
+                pass
+
+    # On attache l'écouteur à la page
+    page.on("response", handle_response)
+
+    try:
+        await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+        await asyncio.sleep(3)
+        
+        try:
+            await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
+        except:
+            pass
+            
+        search_input = page.get_by_placeholder("Please enter contract address")
+        await search_input.wait_for(timeout=10000)
+        await search_input.fill(token['address'])
+        
+        check_button = page.locator("button.submit-button")
+        await check_button.click()
+        
+        print("    -> Attente de l'interception du score (10s)...")
+        await asyncio.sleep(10)
+        
+        # On détache l'écouteur
+        page.remove_listener("response", handle_response)
+        
+        if captured_score is not None:
+            print(f"    -> Score de Risque officiel capturé: {captured_score}%")
+            # RÈGLE : Si le score est entre 0% et 40%
+            if 0 <= captured_score <= 40:
+                return True
+            else:
+                return False
+        else:
+            print("    -> L'API n'a pas renvoyé de risk_score pour ce token.")
+            return False
+            
+    except Exception as e:
+        page.remove_listener("response", handle_response)
+        print(f"    -> Erreur: {e}")
+        return False
+
 async def main():
+    delay = random.uniform(1, 5)
+    print(f"[*] Waiting for {delay:.2f} seconds...")
+    await asyncio.sleep(delay)
+
     tokens = get_new_solana_tokens_via_api()
     if not tokens:
         print("[-] Aucun token trouvé.")
         return
-
-    token = tokens[0]
-    print(f"[*] Interception des communications Ave.ai pour {token['name']}...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
@@ -54,52 +128,22 @@ async def main():
         context = await browser.new_context(**iphone_13, locale='en-US')
         page = await context.new_page()
 
-        # NOUVEAU : Intercepter TOUTES les communications de données (XHR/Fetch)
-        api_responses = []
-        async def handle_response(response):
-            # On ne regarde que les réponses de type JSON ou texte (pas les images)
-            if response.request.resource_type in ["xhr", "fetch"]:
-                try:
-                    body = await response.text()
-                    api_responses.append({"url": response.url, "body": body})
-                except:
-                    pass
+        print("🤖 Agent starting up...")
         
-        page.on("response", handle_response)
-
-        try:
-            await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(3)
+        found_good_coin = False
+        for token in tokens:
+            is_safe = await check_ave_ai(page, token)
+            if is_safe:
+                found_good_coin = True
+                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
+                await send_telegram_message(message)
+            await asyncio.sleep(2)
             
-            try:
-                await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
-            except:
-                pass
-                
-            search_input = page.get_by_placeholder("Please enter contract address")
-            await search_input.wait_for(timeout=10000)
-            await search_input.fill(token['address'])
-            
-            check_button = page.locator("button.submit-button")
-            await check_button.click()
-            
-            print("[*] Attente de 10 secondes pour que l'API réponde...")
-            await asyncio.sleep(10)
-            
-            print(f"[*] {len(api_responses)} communications interceptées.")
-            for resp in api_responses:
-                # On cherche dans le corps de la réponse s'il y a un mot lié au score ou au risque
-                if "risk" in resp['body'].lower() or "score" in resp['body'].lower() or "security" in resp['body'].lower():
-                    print(f"\n--- COMMUNICATION TROUVÉE ---")
-                    print(f"URL: {resp['url']}")
-                    # On affiche les 1000 premiers caractères du contenu
-                    print(f"Contenu: {resp['body'][:1000]}")
-                    print(f"----------------------------\n")
-                    
-        except Exception as e:
-            print(f"Error: {e}")
+        if not found_good_coin:
+            print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
             
         await browser.close()
+        print("✅ Agent finished task.")
 
 if __name__ == "__main__":
     asyncio.run(main())
