@@ -25,9 +25,11 @@ def get_new_solana_tokens_via_api():
         res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
         profiles = res.json()
         solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
+        print(f"[*] Trouvé {len(solana_profiles)} profils Solana récents.")
         
         tokens = []
-        for p in solana_profiles[:50]:
+        # CHANGÉ : On scanne jusqu'à 200 profils pour trouver 15 bons tokens
+        for p in solana_profiles[:200]:
             address = p.get('tokenAddress')
             if not address: continue
             
@@ -36,9 +38,11 @@ def get_new_solana_tokens_via_api():
             pairs = data.get('pairs', [])
             if not pairs: continue
             
-            pair = pairs[0]
+            # Trouver la paire avec la plus grande liquidité
+            pair = max(pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0))
+            
             liq = pair.get('liquidity', {}).get('usd', 0)
-            mcap = pair.get('marketCap', 0)
+            mcap = pair.get('marketCap', 0) or pair.get('fdv', 0) # Parfois marketCap est vide, on utilise fdv
             name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
             
             if liq >= 20000 and mcap >= 100000:
@@ -78,29 +82,37 @@ async def check_ave_ai(page, token):
     except:
         return False
         
-    # NOUVEAU : Récupérer le code HTML brut de toute la page
     html_content = await page.content()
     
-    # NOUVEAU : Chercher TOUS les pourcentages dans le code HTML (ex: "80%", "0%")
-    all_percentages = re.findall(r'(\d{1,3})%', html_content)
+    # NOUVEAU : Trouver tous les pourcentages et afficher leur contexte pour cibler le bon
+    all_percentages = list(re.finditer(r'(\d{1,3})%', html_content))
     
-    # On filtre les pourcentages pour enlever les taxes (0%) et garder le score (ex: 80%)
-    # Le score de risque est généralement le plus grand pourcentage trouvé (hors taxes de 0%)
-    valid_scores = [int(p) for p in all_percentages if int(p) > 0]
+    risk_score = None
+    for match in all_percentages:
+        val = int(match.group(1))
+        if val > 0:
+            start = max(0, match.start() - 50)
+            end = min(len(html_content), match.end() + 50)
+            context = html_content[start:end].replace('\n', ' ')
+            print(f"    -> Pourcentage trouvé: {val}% (Contexte: {context})")
+            # Si le contexte contient "Risk" ou "Assessment", c'est le vrai score
+            if 'risk' in context.lower() or 'assessment' in context.lower():
+                risk_score = val
+
+    # Si on n'a pas trouvé le mot "Risk" à côté, mais qu'on a un pourcentage > 0
+    if risk_score is None and all_percentages:
+        valid_scores = [int(m.group(1)) for m in all_percentages if int(m.group(1)) > 0]
+        if valid_scores:
+            risk_score = max(valid_scores)
     
-    if valid_scores:
-        # Le score de risque est le plus grand pourcentage trouvé
-        risk_score = max(valid_scores)
-        print(f"    -> Score de Risque détecté: {risk_score}%")
-        
-        # RÈGLE: Si le score est entre 0% et 40%
+    if risk_score is not None:
+        print(f"    -> Score de Risque final retenu: {risk_score}%")
         if risk_score <= 40:
             return True
         else:
             return False
     else:
-        # Si tout est 0%, c'est que le token est sûr (0% de risque)
-        print("    -> Score de Risque détecté: 0% (Aucun danger)")
+        print("    -> Aucun pourcentage > 0 trouvé. Le token est peut-être sûr (0% de risque).")
         return True
 
 async def main():
