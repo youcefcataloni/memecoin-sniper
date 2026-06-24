@@ -28,8 +28,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
 
-      - name: Upload Ave Screenshot
+      - name: Upload Ave Search Result
         uses: actions/upload-artifact@v4
         with:
-          name: ave-screenshot
-          path: ave_screenshot.png
+          name: ave-search-result
+          path: ave_search_result.png
