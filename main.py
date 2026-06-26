@@ -7,7 +7,8 @@ import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-SCORE_THRESHOLD_MAX = 65
+SCORE_MIN = 80
+SCORE_MAX = 100
 
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -69,57 +70,58 @@ async def get_new_solana_tokens(page):
     print(f"[+] Found {len(tokens)} tokens valides au total.")
     return tokens
 
-async def check_ave_ai(page, token):
-    print(f"[*] Vérification Ave.ai pour {token['name']}...")
+async def check_rugchecker(page, token):
+    print(f"[*] Vérification RugChecker pour {token['name']}...")
+    url = "https://rugchecker.com/fr"
     
-    captured_score = None
-    
-    async def handle_response(response):
-        nonlocal captured_score
-        if response.request.resource_type in ["xhr", "fetch"]:
-            try:
-                body = await response.text()
-                if "risk_score" in body and token['address'].lower() in body.lower():
-                    match = re.search(r'"risk_score":\s*(\d+)', body)
-                    if match:
-                        captured_score = int(match.group(1))
-            except:
-                pass
-
-    page.on("response", handle_response)
-
     try:
-        await page.goto("https://m.ave.ai/check", wait_until="networkidle", timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(3)
         
+        # Fermer le pop-up "Get Started" s'il apparaît
         try:
-            await page.evaluate("document.querySelectorAll('.van-popup, .van-overlay').forEach(el => el.style.display = 'none');")
+            get_started_btn = page.locator("button:has-text('Get Started')")
+            await get_started_btn.click(timeout=3000)
+            print("    -> Pop-up 'Get Started' fermé.")
+            await asyncio.sleep(2)
         except:
             pass
             
-        search_input = page.get_by_placeholder("Please enter contract address")
+        # Trouver la barre de recherche et taper l'adresse
+        search_input = page.locator("input[placeholder*='Adresse du jeton']")
+        if not await search_input.count():
+            search_input = page.locator("input[type='text']").first
+            
         await search_input.wait_for(timeout=10000)
         await search_input.fill(token['address'])
         
-        check_button = page.locator("button.submit-button")
+        # Cliquer sur le bouton "Rug Check"
+        check_button = page.locator("button:has-text('Rug Check')")
         await check_button.click()
         
-        await asyncio.sleep(10)
-        page.remove_listener("response", handle_response)
+        print("    -> Attente du calcul du score...")
+        await asyncio.sleep(10) # Laisser le temps d'analyser le contrat
         
-        if captured_score is not None:
-            print(f"    -> Score de Risque capturé: {captured_score}%")
-            if 0 <= captured_score <= SCORE_THRESHOLD_MAX:
-                return True
-            else:
-                return False
+        body_text = await page.evaluate("document.body.innerText")
+        
+        # Chercher le score (ex: "Score: 85", "85/100", ou "85%")
+        match = re.search(r'Score[:\s]*(\d{1,3})', body_text, re.IGNORECASE)
+        if not match:
+            match = re.search(r'(\d{1,3})\s*/\s*100', body_text)
+        if not match:
+            match = re.search(r'(\d{1,3})\s*%', body_text)
+            
+        if match:
+            score = int(match.group(1))
+            print(f"    -> Score trouvé: {score}")
+            return score
         else:
-            print("    -> L'API n'a pas renvoyé de risk_score pour ce token.")
-            return False
+            print("    -> Score non trouvé sur la page.")
+            return 0
             
     except Exception as e:
-        page.remove_listener("response", handle_response)
-        return False
+        print(f"    -> Erreur lors de la vérification: {e}")
+        return 0
 
 async def main():
     delay = random.uniform(1, 5)
@@ -128,45 +130,44 @@ async def main():
 
     async with async_playwright() as p:
         # 1. Chromium en mode Fenêtre réelle pour tromper Cloudflare
-        print("[*] Lancement de Chromium (Fenêtre réelle) pour DexScreener...")
+        print("[*] Lancement de Chromium (Fenêtre réelle)...")
         chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         chr_context = await chr_browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
-            locale='en-US'
+            locale='fr-FR'
         )
         dex_page = await chr_context.new_page()
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         tokens = await get_new_solana_tokens(dex_page)
-        await chr_browser.close()
+        await dex_page.close() # On ferme la page DexScreener pour libérer de la mémoire
         
         if not tokens:
             print("[-] Aucun token trouvé.")
             return
 
-        # 2. Chromium (iPhone) pour Ave.ai
-        print("[*] Lancement de Chromium pour Ave.ai...")
-        ave_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        iphone_13 = p.devices["iPhone 13"]
-        ave_context = await ave_browser.new_context(**iphone_13, locale='en-US')
-        ave_page = await ave_context.new_page()
+        # 2. Nouvelle page pour RugChecker
+        rug_page = await chr_context.new_page()
+        await rug_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
         found_good_coin = False
         for token in tokens:
-            is_safe = await check_ave_ai(ave_page, token)
-            if is_safe:
+            score = await check_rugchecker(rug_page, token)
+            
+            # RÈGLE : Si le score est entre 80 et 100
+            if SCORE_MIN <= score <= SCORE_MAX:
                 found_good_coin = True
-                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 65% sur Ave.ai"
+                message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             await asyncio.sleep(2)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu un score <= 65% cette fois.")
+            print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
             
-        await ave_browser.close()
+        await chr_browser.close()
         print("✅ Agent finished task.")
 
 if __name__ == "__main__":
