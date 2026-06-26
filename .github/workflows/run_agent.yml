@@ -1,4 +1,4 @@
-name: Ave.ai Sniper Agent
+name: RugChecker Sniper Agent
 
 on:
   schedule:
