@@ -7,6 +7,7 @@ import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+SCORE_THRESHOLD_MAX = 45
 
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -19,61 +20,53 @@ async def send_telegram_message(message):
     except:
         pass
 
-def parse_dollar_value(val_str):
-    try:
-        val_str = val_str.replace('$', '').replace(',', '').strip()
-        if 'M' in val_str:
-            return float(val_str.replace('M', '')) * 1_000_000
-        elif 'K' in val_str:
-            return float(val_str.replace('K', '')) * 1_000
-        else:
-            return float(val_str)
-    except:
-        return 0
-
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener (Firefox)...")
-    await page.goto("https://dexscreener.com/solana", wait_until="domcontentloaded", timeout=30000)
+    print("[*] Scraping DexScreener avec l'URL magique (0-72h)...")
+    url = "https://dexscreener.com/solana?rankBy=trendingScoreH6&order=desc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
+    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(5)
     
-    try:
-        await page.wait_for_selector("a[href*='/solana/']", timeout=20000)
-    except:
-        print("[-] DexScreener bloqué ou layout changé.")
-        return []
-
-    all_links = await page.query_selector_all("a[href*='/solana/']")
-    
-    token_rows = []
-    for row in all_links:
-        href = await row.get_attribute("href")
-        if href:
-            address = href.split("/solana/")[1].split("?")[0]
-            if len(address) >= 32:
-                token_rows.append(row)
-
     tokens = []
-    for row in token_rows[:50]:
-        try:
-            href = await row.get_attribute("href")
-            if href and "/solana/" in href:
-                address = href.split("/solana/")[1].split("?")[0]
-                
-                row_text = await row.inner_text()
-                text_parts = row_text.split('\n')
-                dollar_strings = [s for s in text_parts if '$' in s and len(s) < 15]
-                
-                if len(dollar_strings) >= 2:
-                    liq_val = parse_dollar_value(dollar_strings[-2])
-                    mcap_val = parse_dollar_value(dollar_strings[-1])
+    seen_addresses = set()
+    last_count = 0
+    stable_scrolls = 0
+    
+    print("[*] Scroll mémorisé pour collecter tous les tokens filtrés...")
+    for scroll_count in range(50):
+        rows = await page.query_selector_all("a[href*='/solana/']")
+        
+        for row in rows:
+            try:
+                href = await row.get_attribute("href")
+                if href and "/solana/" in href:
+                    address = href.split("/solana/")[1].split("?")[0]
                     
-                    if liq_val >= 20000 and mcap_val >= 100000:
+                    if len(address) >= 32 and address not in seen_addresses:
+                        seen_addresses.add(address)
+                        row_text = await row.inner_text()
+                        text_parts = row_text.split('\n')
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
+                        
+                        print(f"    -> [GARDÉ] {name} | {address[:8]}...")
                         tokens.append({"name": name, "address": address})
-                        if len(tokens) >= 15:
-                            break 
-        except:
-            continue
+            except:
+                continue
+                
+        if len(tokens) >= 50:
+            break
+            
+        if len(seen_addresses) == last_count:
+            stable_scrolls += 1
+            if stable_scrolls > 10:
+                break
+        else:
+            stable_scrolls = 0
+        last_count = len(seen_addresses)
+        
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(1.5)
+
+    print(f"[+] Found {len(tokens)} tokens valides au total.")
     return tokens
 
 async def check_ave_ai(page, token):
@@ -86,9 +79,7 @@ async def check_ave_ai(page, token):
         if response.request.resource_type in ["xhr", "fetch"]:
             try:
                 body = await response.text()
-                # NOUVEAU : On cherche spécifiquement la clé "risk_score" avec un double point
-                # Le regex '"risk_score":\s*(\d+)' ne matchera pas "analysis_risk_score"
-                if '"risk_score"' in body:
+                if "risk_score" in body and token['address'].lower() in body.lower():
                     match = re.search(r'"risk_score":\s*(\d+)', body)
                     if match:
                         captured_score = int(match.group(1))
@@ -117,9 +108,8 @@ async def check_ave_ai(page, token):
         page.remove_listener("response", handle_response)
         
         if captured_score is not None:
-            print(f"    -> Score de Risque officiel capturé: {captured_score}%")
-            # RÈGLE : Si le score est entre 0% et 40%
-            if 0 <= captured_score <= 40:
+            print(f"    -> Score de Risque capturé: {captured_score}%")
+            if 0 <= captured_score <= SCORE_THRESHOLD_MAX:
                 return True
             else:
                 return False
@@ -127,7 +117,7 @@ async def check_ave_ai(page, token):
             print("    -> L'API n'a pas renvoyé de risk_score pour ce token.")
             return False
             
-    except:
+    except Exception as e:
         page.remove_listener("response", handle_response)
         return False
 
@@ -155,7 +145,7 @@ async def main():
             print("[-] Aucun token trouvé.")
             return
 
-        # 2. Chromium pour Ave.ai
+        # 2. Chromium (iPhone) pour Ave.ai
         print("[*] Lancement de Chromium pour Ave.ai...")
         chr_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         iphone_13 = p.devices["iPhone 13"]
@@ -169,12 +159,12 @@ async def main():
             is_safe = await check_ave_ai(ave_page, token)
             if is_safe:
                 found_good_coin = True
-                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 40% sur Ave.ai"
+                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score entre 0% et 45% sur Ave.ai"
                 await send_telegram_message(message)
             await asyncio.sleep(2)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu un score entre 0% et 40% cette fois.")
+            print("[-] Aucun token n'a eu un score <= 45% cette fois.")
             
         await chr_browser.close()
         print("✅ Agent finished task.")
