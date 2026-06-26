@@ -127,19 +127,19 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # 1. Firefox pour DexScreener
-        print("[*] Lancement de Firefox pour DexScreener...")
-        ff_browser = await p.firefox.launch(headless=True)
-        ff_context = await ff_browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        # 1. Chromium en mode Fenêtre réelle pour tromper Cloudflare
+        print("[*] Lancement de Chromium (Fenêtre réelle) pour DexScreener...")
+        chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        chr_context = await chr_browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='en-US'
         )
-        dex_page = await ff_context.new_page()
+        dex_page = await chr_context.new_page()
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         tokens = await get_new_solana_tokens(dex_page)
-        await ff_browser.close()
+        await chr_browser.close()
         
         if not tokens:
             print("[-] Aucun token trouvé.")
@@ -147,9 +147,9 @@ async def main():
 
         # 2. Chromium (iPhone) pour Ave.ai
         print("[*] Lancement de Chromium pour Ave.ai...")
-        chr_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        ave_browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         iphone_13 = p.devices["iPhone 13"]
-        ave_context = await chr_browser.new_context(**iphone_13, locale='en-US')
+        ave_context = await ave_browser.new_context(**iphone_13, locale='en-US')
         ave_page = await ave_context.new_page()
 
         print("🤖 Agent starting up...")
@@ -166,7 +166,7 @@ async def main():
         if not found_good_coin:
             print("[-] Aucun token n'a eu un score <= 65% cette fois.")
             
-        await chr_browser.close()
+        await ave_browser.close()
         print("✅ Agent finished task.")
 
 if __name__ == "__main__":
