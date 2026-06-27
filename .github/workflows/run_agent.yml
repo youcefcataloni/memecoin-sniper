@@ -29,3 +29,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: xvfb-run python main.py
+      - name: Upload ST Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: st-screenshots
+          path: |
+            st_home.png
+            st_result.png
