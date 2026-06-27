@@ -1,33 +1,5 @@
 import asyncio
 from playwright.async_api import async_playwright
-import requests
-import os
-import random
-import re
-
-async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener avec l'URL magique (0-72h)...")
-    url = "https://dexscreener.com/solana?rankBy=trendingScoreH6&order=desc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(5)
-    
-    tokens = []
-    rows = await page.query_selector_all("a[href*='/solana/']")
-    for row in rows[:10]:
-        try:
-            href = await row.get_attribute("href")
-            if href and "/solana/" in href:
-                address = href.split("/solana/")[1].split("?")[0]
-                if len(address) >= 32:
-                    row_text = await row.inner_text()
-                    text_parts = row_text.split('\n')
-                    name = text_parts[1] if len(text_parts) > 1 else "Unknown"
-                    tokens.append({"name": name, "address": address})
-                    if len(tokens) >= 1:
-                        return tokens
-        except:
-            continue
-    return tokens
 
 async def main():
     async with async_playwright() as p:
@@ -38,18 +10,10 @@ async def main():
             viewport={'width': 1920, 'height': 1080},
             locale='fr-FR'
         )
-        dex_page = await chr_context.new_page()
-        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        tokens = await get_new_solana_tokens(dex_page)
-        await dex_page.close()
-        
-        if not tokens:
-            print("[-] Aucun token trouvé.")
-            return
-
-        token = tokens[0]
-        print(f"[*] Test RugChecker pour {token['name']} ({token['address'][:8]}...)")
+        # On force un token connu (BONK) pour tester RugChecker directement
+        token = {"name": "BONK", "address": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"}
+        print(f"[*] Test RugChecker direct pour {token['name']}...")
         url = "https://rugchecker.com/fr"
         
         rug_page = await chr_context.new_page()
