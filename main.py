@@ -28,12 +28,12 @@ async def get_new_solana_tokens(page):
     rows = []
     for attempt in range(3):
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(8)
+        await asyncio.sleep(5)
         rows = await page.query_selector_all("a[href*='/solana/']")
         if len(rows) > 0:
             print(f"[+] Cloudflare nous a laissé passer (Tentative {attempt+1}).")
             break
-        print(f"[*] Bloqué par Cloudflare ou page vide. Nouvelle tentative dans 10s...")
+        print(f"[*] Bloqué par Cloudflare. Nouvelle tentative dans 10s...")
         await asyncio.sleep(10)
         
     if not rows:
@@ -41,11 +41,9 @@ async def get_new_solana_tokens(page):
     
     tokens = []
     seen_addresses = set()
-    last_count = 0
-    stable_scrolls = 0
     
-    print("[*] Scroll mémorisé pour collecter tous les tokens...")
-    for scroll_count in range(50):
+    print("[*] Scroll mémorisé pour collecter les 10 premiers tokens...")
+    for scroll_count in range(20):
         rows = await page.query_selector_all("a[href*='/solana/']")
         
         for row in rows:
@@ -62,20 +60,13 @@ async def get_new_solana_tokens(page):
                         
                         print(f"    -> [GARDÉ] {name} | {address[:8]}...")
                         tokens.append({"name": name, "address": address})
+                        
+                        # NOUVEAU : On s'arrête à 10 tokens pour finir en moins de 5 minutes
+                        if len(tokens) >= 10:
+                            return tokens
             except:
                 continue
-                
-        if len(tokens) >= 30: # On limite à 30 tokens pour ne pas dépasser le temps de GitHub
-            break
             
-        if len(seen_addresses) == last_count:
-            stable_scrolls += 1
-            if stable_scrolls > 10:
-                break
-        else:
-            stable_scrolls = 0
-        last_count = len(seen_addresses)
-        
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await asyncio.sleep(1.5)
 
@@ -86,16 +77,15 @@ async def check_rugchecker(page, token):
     print(f"[*] Vérification RugChecker pour {token['name']}...")
     url = "https://rugchecker.com/fr"
     
-    # NOUVEAU : Système de retry pour contrer le blocage de RugChecker
-    for attempt in range(3):
+    for attempt in range(2): # Réduit à 2 essais pour gagner du temps
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
             try:
                 get_started_btn = page.locator("button:has-text('Get Started')")
                 await get_started_btn.click(timeout=3000)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
             except:
                 pass
                 
@@ -111,16 +101,15 @@ async def check_rugchecker(page, token):
             check_button = page.locator("button:has-text('Rug Check')")
             await check_button.click()
             
-            print(f"    -> Attente du calcul du score (15s)... [Essai {attempt+1}/3]")
-            await asyncio.sleep(15)
+            print(f"    -> Attente du calcul du score (10s)... [Essai {attempt+1}/2]")
+            await asyncio.sleep(10) # Réduit à 10s
             
             body_text = await page.evaluate("document.body.innerText")
             
-            # Vérification du blocage serveur
             if "serverError" in body_text or "errorTitle" in body_text:
-                print("    -> Serveur RugChecker saturé. Pause de 30s pour le laisser refroidir...")
-                await asyncio.sleep(30)
-                continue # Retente la boucle
+                print("    -> Serveur saturé. Pause de 15s...")
+                await asyncio.sleep(15)
+                continue
             
             match = re.search(r'Analyse de sécurité du jeton\s*(\d{1,3})', body_text, re.IGNORECASE)
             
@@ -140,14 +129,14 @@ async def check_rugchecker(page, token):
                 
         except Exception as e:
             if "ERR_CONNECTION_CLOSED" in str(e) or "ERR_CONNECTION_RESET" in str(e):
-                print(f"    -> Connexion coupée par RugChecker. Pause de 30s... [Essai {attempt+1}/3]")
-                await asyncio.sleep(30)
+                print(f"    -> Connexion coupée. Pause de 15s... [Essai {attempt+1}/2]")
+                await asyncio.sleep(15)
                 continue
             else:
-                print(f"    -> Erreur lors de la vérification: {e}")
+                print(f"    -> Erreur: {e}")
                 return 0
                 
-    print("    -> Échec après 3 tentatives, on passe au token suivant.")
+    print("    -> Échec, on passe au token suivant.")
     return 0
 
 async def main():
@@ -187,8 +176,7 @@ async def main():
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             
-            # Délai standard entre chaque token
-            await asyncio.sleep(5)
+            await asyncio.sleep(3) # Délai réduit entre les tokens
             
         if not found_good_coin:
             print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
