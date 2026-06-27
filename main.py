@@ -49,16 +49,33 @@ async def get_new_solana_tokens(page):
             try:
                 href = await row.get_attribute("href")
                 if href and "/solana/" in href:
-                    address = href.split("/solana/")[1].split("?")[0]
+                    pair_address = href.split("/solana/")[1].split("?")[0]
                     
-                    if len(address) >= 32 and address not in seen_addresses:
-                        seen_addresses.add(address)
+                    if len(pair_address) >= 32 and pair_address not in seen_addresses:
+                        seen_addresses.add(pair_address)
+                        
+                        # NOUVEAU : On récupère TOUS les liens de la ligne
+                        links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
+                        token_address = None
+                        
+                        for link in links:
+                            if "/solana/" in link:
+                                addr = link.split("/solana/")[1].split("?")[0]
+                                # Si l'adresse est différente de l'adresse de la paire, c'est l'adresse du Token !
+                                if len(addr) >= 32 and addr != pair_address:
+                                    token_address = addr
+                                    break
+                        
+                        # Si on n'a pas trouvé d'adresse différente, on garde l'adresse de la paire
+                        if not token_address:
+                            token_address = pair_address
+                            
                         row_text = await row.inner_text()
                         text_parts = row_text.split('\n')
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
-                        print(f"    -> [GARDÉ 3-7j] {name} | {address[:8]}...")
-                        tokens.append({"name": name, "address": address})
+                        print(f"    -> [GARDÉ 3-7j] {name} | Token: {token_address[:8]}...")
+                        tokens.append({"name": name, "address": token_address})
                         
                         if len(tokens) >= 15:
                             return tokens
@@ -79,16 +96,13 @@ async def check_solanatracker(page, token):
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(5)
         
-        # NOUVEAU : On cible la barre de recherche centrale (celle avec "address" ou "token" dans le placeholder)
         search_input = page.locator("input[placeholder*='address' i], input[placeholder*='token' i]").first
         if not await search_input.count():
-            # Si on ne la trouve pas, on prend la 2ème input de la page (la 1ère étant le menu)
             search_input = page.locator("input[type='text']").nth(1)
             
         await search_input.wait_for(timeout=10000)
         await search_input.fill(token['address'])
         
-        # Cliquer sur le bouton "Analyze" s'il existe, sinon appuyer sur Entrée
         analyze_btn = page.locator("button:has-text('Analyze')")
         if await analyze_btn.count():
             await analyze_btn.click()
@@ -96,7 +110,6 @@ async def check_solanatracker(page, token):
             await page.keyboard.press("Enter")
         
         print("    -> Attente du chargement du score...")
-        # On attend que le texte "/10" apparaisse à l'écran
         try:
             await page.wait_for_function("() => document.body.innerText.includes('/10')", timeout=15000)
         except:
@@ -105,10 +118,8 @@ async def check_solanatracker(page, token):
             
         body_text = await page.evaluate("document.body.innerText")
         
-        # Cherche spécifiquement le format avec des parenthèses (ex: "(4/10)")
         match = re.search(r'\((\d{1,2})\s*/\s*10\)', body_text)
         if not match:
-            # Fallback sans parenthèses
             match = re.search(r'(\d{1,2})\s*/\s*10', body_text)
             
         if match:
