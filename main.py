@@ -23,6 +23,7 @@ async def send_telegram_message(message):
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Newest, 0-72h)...")
+    # URL triée par Newest avec vos filtres
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(5)
@@ -116,8 +117,6 @@ async def check_rugchecker(page, token):
                 return score
                 
             print("    -> Score non trouvé sur la page.")
-            # NOUVEAU : On affiche le texte pour comprendre pourquoi
-            print(f"    -> TEXTE VU PAR L'AGENT:\n{body_text[:1000]}\n")
             return 0
             
     except Exception as e:
@@ -152,15 +151,21 @@ async def main():
 
         print("🤖 Agent starting up...")
         
-        # NOUVEAU : On ne teste que les 2 premiers tokens pour ne pas spammer les logs
-        for token in tokens[:2]:
+        found_good_coin = False
+        # On vérifie TOUS les tokens trouvés
+        for token in tokens:
             score = await check_rugchecker(rug_page, token)
             
             if SCORE_MIN <= score <= SCORE_MAX:
+                found_good_coin = True
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             await asyncio.sleep(2)
             
+        if not found_good_coin:
+            print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
+            
+        await chr_browser.close()
         print("✅ Agent finished task.")
 
 if __name__ == "__main__":
