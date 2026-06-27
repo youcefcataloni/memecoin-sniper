@@ -4,7 +4,7 @@ import requests
 import os
 import random
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -23,7 +23,7 @@ async def send_telegram_message(message):
         pass
 
 def get_new_solana_tokens_via_api():
-    print("[*] Récupération des tokens via l'API DexScreener (Immunisé à Cloudflare)...")
+    print("[*] Récupération des tokens via l'API DexScreener...")
     try:
         res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
         profiles = res.json()
@@ -32,7 +32,7 @@ def get_new_solana_tokens_via_api():
         tokens = []
         now = datetime.now(timezone.utc)
         
-        for p in solana_profiles[:200]: # On scanne les 200 derniers profils
+        for p in solana_profiles[:200]:
             address = p.get('tokenAddress')
             if not address: continue
             
@@ -46,12 +46,15 @@ def get_new_solana_tokens_via_api():
             mcap = pair.get('marketCap', 0) or pair.get('fdv', 0)
             name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
             
-            # FILTRE FINANCIER
             if liq >= 20000 and mcap >= 100000:
-                # FILTRE AGE (0 à 72 heures)
-                created_at_str = pair.get('pairCreatedAt')
-                if created_at_str:
-                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                created_at_val = pair.get('pairCreatedAt')
+                if created_at_val:
+                    # CORRECTION : Gère le cas où la date est un nombre (timestamp)
+                    if isinstance(created_at_val, (int, float)):
+                        created_at = datetime.fromtimestamp(created_at_val / 1000, timezone.utc)
+                    else:
+                        created_at = datetime.fromisoformat(str(created_at_val).replace('Z', '+00:00'))
+                        
                     age_hours = (now - created_at).total_seconds() / 3600
                     
                     if 0 <= age_hours <= 72:
@@ -100,7 +103,6 @@ async def check_rugchecker(page, token):
         
         body_text = await page.evaluate("document.body.innerText")
         
-        # Le score est sous "Analyse de sécurité du jeton"
         match = re.search(r'Analyse de sécurité du jeton\s*(\d{1,3})', body_text, re.IGNORECASE)
         
         if match:
@@ -126,13 +128,11 @@ async def main():
     print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
-    # 1. API DexScreener (Pas de navigateur, pas de blocage)
     tokens = get_new_solana_tokens_via_api()
     if not tokens:
         print("[-] Aucun token trouvé.")
         return
 
-    # 2. Chromium pour RugChecker
     async with async_playwright() as p:
         print("[*] Lancement de Chromium (Fenêtre réelle) pour RugChecker...")
         chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
