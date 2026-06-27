@@ -23,7 +23,6 @@ async def send_telegram_message(message):
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Newest, 0-72h)...")
-    # URL triée par Newest (pairAge ascendant) avec vos filtres
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(5)
@@ -117,6 +116,8 @@ async def check_rugchecker(page, token):
                 return score
                 
             print("    -> Score non trouvé sur la page.")
+            # NOUVEAU : On affiche le texte pour comprendre pourquoi
+            print(f"    -> TEXTE VU PAR L'AGENT:\n{body_text[:1000]}\n")
             return 0
             
     except Exception as e:
@@ -129,7 +130,6 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # 1. Chromium en mode Fenêtre réelle pour tromper Cloudflare
         print("[*] Lancement de Chromium (Fenêtre réelle)...")
         chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         chr_context = await chr_browser.new_context(
@@ -141,32 +141,26 @@ async def main():
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         tokens = await get_new_solana_tokens(dex_page)
-        await dex_page.close() # On ferme DexScreener pour libérer de la mémoire
+        await dex_page.close()
         
         if not tokens:
             print("[-] Aucun token trouvé.")
             return
 
-        # 2. Nouvelle page pour RugChecker
         rug_page = await chr_context.new_page()
         await rug_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
-        found_good_coin = False
-        for token in tokens:
+        # NOUVEAU : On ne teste que les 2 premiers tokens pour ne pas spammer les logs
+        for token in tokens[:2]:
             score = await check_rugchecker(rug_page, token)
             
             if SCORE_MIN <= score <= SCORE_MAX:
-                found_good_coin = True
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             await asyncio.sleep(2)
             
-        if not found_good_coin:
-            print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
-            
-        await chr_browser.close()
         print("✅ Agent finished task.")
 
 if __name__ == "__main__":
