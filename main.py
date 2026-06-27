@@ -1,3 +1,4 @@
+
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -20,6 +21,18 @@ async def send_telegram_message(message):
     except:
         pass
 
+def get_real_token_address(pair_address):
+    """Interroge l'API DexScreener pour trouver la vraie adresse du token à partir de l'adresse de la paire"""
+    try:
+        res = requests.get(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}", timeout=5)
+        data = res.json()
+        if data.get('pair'):
+            # L'adresse du token de base (le memecoin)
+            return data['pair'].get('baseToken', {}).get('address')
+    except:
+        pass
+    return None
+
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (3 à 7 jours)...")
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&minAge=72&maxAge=168&profile=1"
@@ -39,7 +52,7 @@ async def get_new_solana_tokens(page):
         return []
     
     tokens = []
-    seen_addresses = set()
+    seen_pairs = set()
     
     print("[*] Scroll mémorisé pour collecter les 15 premiers tokens...")
     for scroll_count in range(20):
@@ -51,31 +64,20 @@ async def get_new_solana_tokens(page):
                 if href and "/solana/" in href:
                     pair_address = href.split("/solana/")[1].split("?")[0]
                     
-                    if len(pair_address) >= 32 and pair_address not in seen_addresses:
-                        seen_addresses.add(pair_address)
+                    if len(pair_address) >= 32 and pair_address not in seen_pairs:
+                        seen_pairs.add(pair_address)
                         
-                        # NOUVEAU : On récupère TOUS les liens de la ligne
-                        links = await row.eval_on_selector_all('a', '(elements) => elements.map(e => e.href)')
-                        token_address = None
-                        
-                        for link in links:
-                            if "/solana/" in link:
-                                addr = link.split("/solana/")[1].split("?")[0]
-                                # Si l'adresse est différente de l'adresse de la paire, c'est l'adresse du Token !
-                                if len(addr) >= 32 and addr != pair_address:
-                                    token_address = addr
-                                    break
-                        
-                        # Si on n'a pas trouvé d'adresse différente, on garde l'adresse de la paire
-                        if not token_address:
-                            token_address = pair_address
+                        # NOUVEAU : On demande à l'API la vraie adresse du token
+                        real_token_addr = get_real_token_address(pair_address)
+                        if not real_token_addr:
+                            continue # Si l'API ne trouve pas, on ignore ce token
                             
                         row_text = await row.inner_text()
                         text_parts = row_text.split('\n')
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
-                        print(f"    -> [GARDÉ 3-7j] {name} | Token: {token_address[:8]}...")
-                        tokens.append({"name": name, "address": token_address})
+                        print(f"    -> [GARDÉ 3-7j] {name} | Token: {real_token_addr[:8]}...")
+                        tokens.append({"name": name, "address": real_token_addr})
                         
                         if len(tokens) >= 15:
                             return tokens
