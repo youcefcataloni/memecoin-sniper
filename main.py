@@ -24,8 +24,21 @@ async def send_telegram_message(message):
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Newest, 0-72h)...")
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(5)
+    
+    # NOUVEAU : Système de retry pour tromper Cloudflare
+    rows = []
+    for attempt in range(3):
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(8) # Laisser le temps à Cloudflare de nous laisser passer
+        rows = await page.query_selector_all("a[href*='/solana/']")
+        if len(rows) > 0:
+            print(f"[+] Cloudflare nous a laissé passer (Tentative {attempt+1}).")
+            break
+        print(f"[*] Bloqué par Cloudflare ou page vide. Nouvelle tentative dans 10s...")
+        await asyncio.sleep(10)
+        
+    if not rows:
+        return []
     
     tokens = []
     seen_addresses = set()
@@ -98,7 +111,6 @@ async def check_rugchecker(page, token):
         await check_button.click()
         
         print("    -> Attente du calcul du score (20s)...")
-        # CHANGÉ : 20 secondes d'attente pour laisser le temps à RugChecker
         await asyncio.sleep(20)
         
         body_text = await page.evaluate("document.body.innerText")
@@ -160,7 +172,6 @@ async def main():
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             
-            # CHANGÉ : Délai de 10 secondes pour ne pas saturer RugChecker
             await asyncio.sleep(10)
             
         if not found_good_coin:
