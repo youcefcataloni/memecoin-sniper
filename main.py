@@ -4,7 +4,6 @@ import requests
 import os
 import random
 import re
-from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -22,54 +21,55 @@ async def send_telegram_message(message):
     except:
         pass
 
-def get_new_solana_tokens_via_api():
-    print("[*] Récupération des tokens via l'API DexScreener...")
-    try:
-        res = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
-        profiles = res.json()
-        solana_profiles = [p for p in profiles if p.get('chainId') == 'solana']
+async def get_new_solana_tokens(page):
+    print("[*] Scraping DexScreener (Newest, 0-72h)...")
+    # URL triée par Newest (pairAge ascendant) avec vos filtres
+    url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
+    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(5)
+    
+    tokens = []
+    seen_addresses = set()
+    last_count = 0
+    stable_scrolls = 0
+    
+    print("[*] Scroll mémorisé pour collecter tous les tokens...")
+    for scroll_count in range(50):
+        rows = await page.query_selector_all("a[href*='/solana/']")
         
-        tokens = []
-        now = datetime.now(timezone.utc)
-        
-        for p in solana_profiles[:200]:
-            address = p.get('tokenAddress')
-            if not address: continue
-            
-            data_res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}", timeout=15)
-            data = data_res.json()
-            pairs = data.get('pairs', [])
-            if not pairs: continue
-            
-            pair = max(pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0))
-            liq = pair.get('liquidity', {}).get('usd', 0)
-            mcap = pair.get('marketCap', 0) or pair.get('fdv', 0)
-            name = p.get('tokenName', pair.get('baseToken', {}).get('name', 'Unknown'))
-            
-            if liq >= 20000 and mcap >= 100000:
-                created_at_val = pair.get('pairCreatedAt')
-                if created_at_val:
-                    # CORRECTION : Gère le cas où la date est un nombre (timestamp)
-                    if isinstance(created_at_val, (int, float)):
-                        created_at = datetime.fromtimestamp(created_at_val / 1000, timezone.utc)
-                    else:
-                        created_at = datetime.fromisoformat(str(created_at_val).replace('Z', '+00:00'))
-                        
-                    age_hours = (now - created_at).total_seconds() / 3600
+        for row in rows:
+            try:
+                href = await row.get_attribute("href")
+                if href and "/solana/" in href:
+                    address = href.split("/solana/")[1].split("?")[0]
                     
-                    if 0 <= age_hours <= 72:
-                        print(f"    -> [GARDÉ 0-72h] {name} | Liq: ${liq:,.0f} | Mcap: ${mcap:,.0f}")
-                        tokens.append({"name": name, "address": address})
+                    if len(address) >= 32 and address not in seen_addresses:
+                        seen_addresses.add(address)
+                        row_text = await row.inner_text()
+                        text_parts = row_text.split('\n')
+                        name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
-            if len(tokens) >= 50:
-                break
+                        print(f"    -> [GARDÉ] {name} | {address[:8]}...")
+                        tokens.append({"name": name, "address": address})
+            except:
+                continue
                 
-        print(f"[+] Found {len(tokens)} tokens valides au total.")
-        return tokens
+        if len(tokens) >= 50:
+            break
+            
+        if len(seen_addresses) == last_count:
+            stable_scrolls += 1
+            if stable_scrolls > 10:
+                break
+        else:
+            stable_scrolls = 0
+        last_count = len(seen_addresses)
         
-    except Exception as e:
-        print(f"[-] Erreur API DexScreener: {e}")
-        return []
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(1.5)
+
+    print(f"[+] Found {len(tokens)} tokens valides au total.")
+    return tokens
 
 async def check_rugchecker(page, token):
     print(f"[*] Vérification RugChecker pour {token['name']}...")
@@ -128,19 +128,26 @@ async def main():
     print(f"[*] Waiting for {delay:.2f} seconds...")
     await asyncio.sleep(delay)
 
-    tokens = get_new_solana_tokens_via_api()
-    if not tokens:
-        print("[-] Aucun token trouvé.")
-        return
-
     async with async_playwright() as p:
-        print("[*] Lancement de Chromium (Fenêtre réelle) pour RugChecker...")
+        # 1. Chromium en mode Fenêtre réelle pour tromper Cloudflare
+        print("[*] Lancement de Chromium (Fenêtre réelle)...")
         chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         chr_context = await chr_browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='fr-FR'
         )
+        dex_page = await chr_context.new_page()
+        await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        tokens = await get_new_solana_tokens(dex_page)
+        await dex_page.close() # On ferme DexScreener pour libérer de la mémoire
+        
+        if not tokens:
+            print("[-] Aucun token trouvé.")
+            return
+
+        # 2. Nouvelle page pour RugChecker
         rug_page = await chr_context.new_page()
         await rug_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
