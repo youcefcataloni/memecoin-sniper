@@ -7,8 +7,7 @@ import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-SCORE_MIN = 80
-SCORE_MAX = 100
+SCORE_MAX = 4 # De 0 à 4/10
 
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -22,8 +21,8 @@ async def send_telegram_message(message):
         pass
 
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener (Newest, 0-72h)...")
-    url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
+    print("[*] Scraping DexScreener (3 à 7 jours)...")
+    url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&minAge=72&maxAge=168&profile=1"
     
     rows = []
     for attempt in range(3):
@@ -42,7 +41,7 @@ async def get_new_solana_tokens(page):
     tokens = []
     seen_addresses = set()
     
-    print("[*] Scroll mémorisé pour collecter les 10 premiers tokens...")
+    print("[*] Scroll mémorisé pour collecter les 15 premiers tokens...")
     for scroll_count in range(20):
         rows = await page.query_selector_all("a[href*='/solana/']")
         
@@ -58,10 +57,10 @@ async def get_new_solana_tokens(page):
                         text_parts = row_text.split('\n')
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
-                        print(f"    -> [GARDÉ] {name} | {address[:8]}...")
+                        print(f"    -> [GARDÉ 3-7j] {name} | {address[:8]}...")
                         tokens.append({"name": name, "address": address})
                         
-                        if len(tokens) >= 10:
+                        if len(tokens) >= 15:
                             return tokens
             except:
                 continue
@@ -72,74 +71,49 @@ async def get_new_solana_tokens(page):
     print(f"[+] Found {len(tokens)} tokens valides au total.")
     return tokens
 
-async def check_rugchecker(p, token):
-    print(f"\n[*] === RÉVEIL POUR: {token['name']} ===")
-    url = "https://rugchecker.com/fr"
-    
-    # NOUVEAU : On ouvre un navigateur TOUT NEUF pour ce token précis
-    browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={'width': 1920, 'height': 1080},
-        locale='fr-FR'
-    )
-    page = await context.new_page()
-    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+async def check_solanatracker(page, token):
+    print(f"[*] Vérification SolanaTracker pour {token['name']}...")
+    url = "https://www.solanatracker.io/rugcheck"
     
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(3)
         
-        try:
-            get_started_btn = page.locator("button:has-text('Get Started')")
-            await get_started_btn.click(timeout=3000)
-            await asyncio.sleep(2)
-        except:
-            pass
-            
-        search_input = page.locator("input[placeholder*='Adresse du jeton']")
+        search_input = page.locator("input[type='text']").first
         if not await search_input.count():
-            search_input = page.locator("input[type='text']").first
+            search_input = page.locator("input[type='search']").first
             
         await search_input.wait_for(timeout=10000)
         await search_input.fill(token['address'])
+        await page.keyboard.press("Enter")
         
-        check_button = page.locator("button:has-text('Rug Check')")
-        await check_button.click()
-        
-        print("    -> Attente du calcul du score (15s)...")
-        await asyncio.sleep(15)
-        
+        print("    -> Attente du chargement du score...")
+        # On attend que le texte "/10" apparaisse à l'écran
+        try:
+            await page.wait_for_function("() => document.body.innerText.includes('/10')", timeout=15000)
+        except:
+            print("    -> Score /10 non trouvé après 15s.")
+            return 99
+            
         body_text = await page.evaluate("document.body.innerText")
         
-        if "serverError" in body_text or "errorTitle" in body_text:
-            print("    -> Serveur saturé quand même.")
-            return 0
-        
-        match = re.search(r'Analyse de sécurité du jeton\s*(\d{1,3})', body_text, re.IGNORECASE)
-        
+        # NOUVEAU : Cherche spécifiquement le format avec des parenthèses (ex: "(4/10)")
+        match = re.search(r'\((\d{1,2})\s*/\s*10\)', body_text)
+        if not match:
+            # Fallback sans parenthèses au cas où
+            match = re.search(r'(\d{1,2})\s*/\s*10', body_text)
+            
         if match:
             score = int(match.group(1))
-            print(f"    -> Score trouvé: {score}")
+            print(f"    -> Score trouvé: {score}/10")
             return score
         else:
-            match_fallback = re.search(r'(\d{1,3})\s*RISQUE', body_text, re.IGNORECASE)
-            if match_fallback:
-                score = int(match_fallback.group(1))
-                print(f"    -> Score (fallback) trouvé: {score}")
-                return score
-                
-            print("    -> Score non trouvé sur la page.")
-            return 0
+            print("    -> Score non trouvé.")
+            return 99
             
     except Exception as e:
         print(f"    -> Erreur: {e}")
-        return 0
-        
-    finally:
-        # NOUVEAU : On ferme le navigateur COMPLÈTEMENT (Extinction)
-        print("    -> Extinction du navigateur.")
-        await browser.close()
+        return 99
 
 async def main():
     delay = random.uniform(1, 5)
@@ -147,7 +121,6 @@ async def main():
     await asyncio.sleep(delay)
 
     async with async_playwright() as p:
-        # 1. Récupération des tokens
         print("[*] Lancement de Chromium (Fenêtre réelle)...")
         chr_browser = await p.chromium.launch(headless=False, args=['--no-sandbox', '--disable-setuid-sandbox'])
         chr_context = await chr_browser.new_context(
@@ -159,29 +132,33 @@ async def main():
         await dex_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         tokens = await get_new_solana_tokens(dex_page)
-        await chr_browser.close()
+        await dex_page.close()
         
         if not tokens:
             print("[-] Aucun token trouvé.")
             return
 
+        st_page = await chr_context.new_page()
+        await st_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
         print("🤖 Agent starting up...")
         
         found_good_coin = False
+        # On vérifie tous les tokens trouvés
         for token in tokens:
-            score = await check_rugchecker(p, token)
+            score = await check_solanatracker(st_page, token)
             
-            if SCORE_MIN <= score <= SCORE_MAX:
+            # RÈGLE : Si le score est entre 0 et 4/10
+            if 0 <= score <= SCORE_MAX:
                 found_good_coin = True
-                message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
+                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/10 sur SolanaTracker"
                 await send_telegram_message(message)
             
-            # NOUVEAU : L'agent s'éteint pendant 45 secondes pour tromper le pare-feu
-            print("[*] Zzz... Extinction 45 secondes pour tromper le pare-feu... Zzz...")
-            await asyncio.sleep(45)
+            # Petite pause entre chaque token
+            await asyncio.sleep(3)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
+            print("[-] Aucun token n'a eu un score <= 4/10 cette fois.")
             
         print("✅ Agent finished task.")
 
