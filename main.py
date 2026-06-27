@@ -25,11 +25,10 @@ async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Newest, 0-72h)...")
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=72&profile=1"
     
-    # NOUVEAU : Système de retry pour tromper Cloudflare
     rows = []
     for attempt in range(3):
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(8) # Laisser le temps à Cloudflare de nous laisser passer
+        await asyncio.sleep(8)
         rows = await page.query_selector_all("a[href*='/solana/']")
         if len(rows) > 0:
             print(f"[+] Cloudflare nous a laissé passer (Tentative {attempt+1}).")
@@ -66,7 +65,7 @@ async def get_new_solana_tokens(page):
             except:
                 continue
                 
-        if len(tokens) >= 50:
+        if len(tokens) >= 30: # On limite à 30 tokens pour ne pas dépasser le temps de GitHub
             break
             
         if len(seen_addresses) == last_count:
@@ -87,53 +86,69 @@ async def check_rugchecker(page, token):
     print(f"[*] Vérification RugChecker pour {token['name']}...")
     url = "https://rugchecker.com/fr"
     
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
-        
+    # NOUVEAU : Système de retry pour contrer le blocage de RugChecker
+    for attempt in range(3):
         try:
-            get_started_btn = page.locator("button:has-text('Get Started')")
-            await get_started_btn.click(timeout=3000)
-            await asyncio.sleep(2)
-        except:
-            pass
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
             
-        search_input = page.locator("input[placeholder*='Adresse du jeton']")
-        if not await search_input.count():
-            search_input = page.locator("input[type='text']").first
-            
-        await search_input.wait_for(timeout=10000)
-        await search_input.fill("")
-        await asyncio.sleep(1)
-        await search_input.fill(token['address'])
-        
-        check_button = page.locator("button:has-text('Rug Check')")
-        await check_button.click()
-        
-        print("    -> Attente du calcul du score (20s)...")
-        await asyncio.sleep(20)
-        
-        body_text = await page.evaluate("document.body.innerText")
-        
-        match = re.search(r'Analyse de sécurité du jeton\s*(\d{1,3})', body_text, re.IGNORECASE)
-        
-        if match:
-            score = int(match.group(1))
-            print(f"    -> Score trouvé: {score}")
-            return score
-        else:
-            match_fallback = re.search(r'(\d{1,3})\s*RISQUE', body_text, re.IGNORECASE)
-            if match_fallback:
-                score = int(match_fallback.group(1))
-                print(f"    -> Score (fallback) trouvé: {score}")
-                return score
+            try:
+                get_started_btn = page.locator("button:has-text('Get Started')")
+                await get_started_btn.click(timeout=3000)
+                await asyncio.sleep(2)
+            except:
+                pass
                 
-            print("    -> Score non trouvé sur la page.")
-            return 0
+            search_input = page.locator("input[placeholder*='Adresse du jeton']")
+            if not await search_input.count():
+                search_input = page.locator("input[type='text']").first
+                
+            await search_input.wait_for(timeout=10000)
+            await search_input.fill("")
+            await asyncio.sleep(1)
+            await search_input.fill(token['address'])
             
-    except Exception as e:
-        print(f"    -> Erreur lors de la vérification: {e}")
-        return 0
+            check_button = page.locator("button:has-text('Rug Check')")
+            await check_button.click()
+            
+            print(f"    -> Attente du calcul du score (15s)... [Essai {attempt+1}/3]")
+            await asyncio.sleep(15)
+            
+            body_text = await page.evaluate("document.body.innerText")
+            
+            # Vérification du blocage serveur
+            if "serverError" in body_text or "errorTitle" in body_text:
+                print("    -> Serveur RugChecker saturé. Pause de 30s pour le laisser refroidir...")
+                await asyncio.sleep(30)
+                continue # Retente la boucle
+            
+            match = re.search(r'Analyse de sécurité du jeton\s*(\d{1,3})', body_text, re.IGNORECASE)
+            
+            if match:
+                score = int(match.group(1))
+                print(f"    -> Score trouvé: {score}")
+                return score
+            else:
+                match_fallback = re.search(r'(\d{1,3})\s*RISQUE', body_text, re.IGNORECASE)
+                if match_fallback:
+                    score = int(match_fallback.group(1))
+                    print(f"    -> Score (fallback) trouvé: {score}")
+                    return score
+                    
+                print("    -> Score non trouvé sur la page.")
+                return 0
+                
+        except Exception as e:
+            if "ERR_CONNECTION_CLOSED" in str(e) or "ERR_CONNECTION_RESET" in str(e):
+                print(f"    -> Connexion coupée par RugChecker. Pause de 30s... [Essai {attempt+1}/3]")
+                await asyncio.sleep(30)
+                continue
+            else:
+                print(f"    -> Erreur lors de la vérification: {e}")
+                return 0
+                
+    print("    -> Échec après 3 tentatives, on passe au token suivant.")
+    return 0
 
 async def main():
     delay = random.uniform(1, 5)
@@ -172,7 +187,8 @@ async def main():
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             
-            await asyncio.sleep(10)
+            # Délai standard entre chaque token
+            await asyncio.sleep(5)
             
         if not found_good_coin:
             print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
