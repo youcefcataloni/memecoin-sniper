@@ -97,8 +97,9 @@ async def check_rugchecker(page, token):
         check_button = page.locator("button:has-text('Rug Check')")
         await check_button.click()
         
-        print("    -> Attente du calcul du score...")
-        await asyncio.sleep(12)
+        print("    -> Attente du calcul du score (20s)...")
+        # CHANGÉ : 20 secondes d'attente pour laisser le temps à RugChecker
+        await asyncio.sleep(20)
         
         body_text = await page.evaluate("document.body.innerText")
         
@@ -159,8 +160,8 @@ async def main():
                 message = f"🚀 <b>High Score Token Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/100 sur RugChecker"
                 await send_telegram_message(message)
             
-            # NOUVEAU : Délai de 5 secondes entre chaque token pour éviter que RugChecker ne bloque l'agent
-            await asyncio.sleep(5)
+            # CHANGÉ : Délai de 10 secondes pour ne pas saturer RugChecker
+            await asyncio.sleep(10)
             
         if not found_good_coin:
             print("[-] Aucun token n'a eu un score entre 80 et 100 cette fois.")
