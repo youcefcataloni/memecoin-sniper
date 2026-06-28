@@ -1,4 +1,3 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -8,7 +7,6 @@ import re
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-SCORE_MAX = 4 # De 0 à 4/10
 
 async def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -27,15 +25,15 @@ def get_real_token_address(pair_address):
         res = requests.get(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}", timeout=5)
         data = res.json()
         if data.get('pair'):
-            # L'adresse du token de base (le memecoin)
             return data['pair'].get('baseToken', {}).get('address')
     except:
         pass
     return None
 
 async def get_new_solana_tokens(page):
-    print("[*] Scraping DexScreener (3 à 7 jours)...")
-    url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&minAge=72&maxAge=168&profile=1"
+    print("[*] Scraping DexScreener (Moins de 24h)...")
+    # Filtre 0 à 24h
+    url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=24&profile=1"
     
     rows = []
     for attempt in range(3):
@@ -54,8 +52,8 @@ async def get_new_solana_tokens(page):
     tokens = []
     seen_pairs = set()
     
-    print("[*] Scroll mémorisé pour collecter les 15 premiers tokens...")
-    for scroll_count in range(20):
+    print("[*] Scroll mémorisé pour collecter les 25 premiers tokens...")
+    for scroll_count in range(30): # Plus de scrolls pour trouver 25 tokens
         rows = await page.query_selector_all("a[href*='/solana/']")
         
         for row in rows:
@@ -67,19 +65,19 @@ async def get_new_solana_tokens(page):
                     if len(pair_address) >= 32 and pair_address not in seen_pairs:
                         seen_pairs.add(pair_address)
                         
-                        # NOUVEAU : On demande à l'API la vraie adresse du token
                         real_token_addr = get_real_token_address(pair_address)
                         if not real_token_addr:
-                            continue # Si l'API ne trouve pas, on ignore ce token
+                            continue
                             
                         row_text = await row.inner_text()
                         text_parts = row_text.split('\n')
                         name = text_parts[1] if len(text_parts) > 1 else "Unknown"
                         
-                        print(f"    -> [GARDÉ 3-7j] {name} | Token: {real_token_addr[:8]}...")
+                        print(f"    -> [GARDÉ <24h] {name} | Token: {real_token_addr[:8]}...")
                         tokens.append({"name": name, "address": real_token_addr})
                         
-                        if len(tokens) >= 15:
+                        # NOUVEAU : On s'arrête à 25 tokens
+                        if len(tokens) >= 25:
                             return tokens
             except:
                 continue
@@ -90,51 +88,37 @@ async def get_new_solana_tokens(page):
     print(f"[+] Found {len(tokens)} tokens valides au total.")
     return tokens
 
-async def check_solanatracker(page, token):
-    print(f"[*] Vérification SolanaTracker pour {token['name']}...")
-    url = "https://www.solanatracker.io/rugcheck"
+async def check_trenchradar(page, token):
+    print(f"[*] Vérification TrenchRadar pour {token['name']}...")
+    url = "https://www.trenchradar.net/app?chain=solana"
     
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(5)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
-        search_input = page.locator("input[placeholder*='address' i], input[placeholder*='token' i]").first
-        if not await search_input.count():
-            search_input = page.locator("input[type='text']").nth(1)
-            
-        await search_input.wait_for(timeout=10000)
-        await search_input.fill(token['address'])
+        # Trouver la barre de recherche
+        search_input = await page.wait_for_selector("input[type='text'], input[type='search'], input[placeholder*='search' i], input[placeholder*='address' i]", timeout=15000)
         
-        analyze_btn = page.locator("button:has-text('Analyze')")
-        if await analyze_btn.count():
-            await analyze_btn.click()
-        else:
+        if search_input:
+            await search_input.fill(token['address'])
             await page.keyboard.press("Enter")
-        
-        print("    -> Attente du chargement du score...")
-        try:
-            await page.wait_for_function("() => document.body.innerText.includes('/10')", timeout=15000)
-        except:
-            print("    -> Score /10 non trouvé après 15s.")
-            return 99
             
-        body_text = await page.evaluate("document.body.innerText")
-        
-        match = re.search(r'\((\d{1,2})\s*/\s*10\)', body_text)
-        if not match:
-            match = re.search(r'(\d{1,2})\s*/\s*10', body_text)
+            print("    -> Attente du chargement de TrenchRadar...")
+            await asyncio.sleep(10)
             
-        if match:
-            score = int(match.group(1))
-            print(f"    -> Score trouvé: {score}/10")
-            return score
-        else:
-            print("    -> Score non trouvé.")
-            return 99
+            body_text = await page.evaluate("document.body.innerText")
+            body_lower = body_text.lower()
             
+            # NOUVEAU : On cherche le mot "LOW" (comme le Wash Risk LOW en vert)
+            if "low risk" in body_lower or ("wash risk" in body_lower and "low" in body_lower):
+                print("    -> Statut 'LOW' (Vert) trouvé !")
+                return True
+            else:
+                print("    -> Statut 'LOW' non trouvé sur la page.")
+                return False
+                
     except Exception as e:
         print(f"    -> Erreur: {e}")
-        return 99
+        return False
 
 async def main():
     delay = random.uniform(1, 5)
@@ -159,25 +143,25 @@ async def main():
             print("[-] Aucun token trouvé.")
             return
 
-        st_page = await chr_context.new_page()
-        await st_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        tr_page = await chr_context.new_page()
+        await tr_page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("🤖 Agent starting up...")
         
         found_good_coin = False
         for token in tokens:
-            score = await check_solanatracker(st_page, token)
+            is_low_risk = await check_trenchradar(tr_page, token)
             
-            # RÈGLE : Si le score est entre 0 et 4/10
-            if 0 <= score <= SCORE_MAX:
+            # RÈGLE : Si TrenchRadar affiche "LOW" en vert
+            if is_low_risk:
                 found_good_coin = True
-                message = f"✅ <b>Token Faible Risque Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Score de {score}/10 sur SolanaTracker"
+                message = f"✅ <b>Token LOW RISK Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Statut LOW (Vert) sur TrenchRadar"
                 await send_telegram_message(message)
             
             await asyncio.sleep(3)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu un score <= 4/10 cette fois.")
+            print("[-] Aucun token n'a eu le statut LOW cette fois.")
             
         print("✅ Agent finished task.")
 
