@@ -1,10 +1,10 @@
-
 import asyncio
 from playwright.async_api import async_playwright
 import requests
 import os
 import random
 import re
+from datetime import datetime, timezone
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -20,16 +20,45 @@ async def send_telegram_message(message):
     except:
         pass
 
-def get_real_token_address(pair_address):
-    """Interroge l'API DexScreener pour trouver la vraie adresse du token à partir de l'adresse de la paire"""
+def get_token_info(pair_address):
+    """
+    Interroge l'API DexScreener pour trouver la vraie adresse du token 
+    ET vérifier l'âge de la plus vieille pool de ce token.
+    """
     try:
+        # 1. Trouver l'adresse du token à partir de la paire
         res = requests.get(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}", timeout=5)
         data = res.json()
         if data.get('pair'):
-            return data['pair'].get('baseToken', {}).get('address')
+            token_address = data['pair'].get('baseToken', {}).get('address')
+            if not token_address: 
+                return None, 999
+                
+            # 2. Chercher TOUTES les pools de ce token pour trouver la plus vieille
+            token_res = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{token_address}", timeout=5)
+            token_data = token_res.json()
+            pairs = token_data.get('pairs', [])
+            
+            oldest_age_hours = 0
+            now = datetime.now(timezone.utc)
+            
+            for p in pairs:
+                created_at_val = p.get('pairCreatedAt')
+                if created_at_val:
+                    if isinstance(created_at_val, (int, float)):
+                        created_at = datetime.fromtimestamp(created_at_val / 1000, timezone.utc)
+                    else:
+                        created_at = datetime.fromisoformat(str(created_at_val).replace('Z', '+00:00'))
+                        
+                    age_hours = (now - created_at).total_seconds() / 3600
+                    if age_hours > oldest_age_hours:
+                        oldest_age_hours = age_hours
+                        
+            return token_address, oldest_age_hours
+            
     except:
         pass
-    return None
+    return None, 999
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Moins de 24h)...")
@@ -65,8 +94,15 @@ async def get_new_solana_tokens(page):
                     if len(pair_address) >= 32 and pair_address not in seen_pairs:
                         seen_pairs.add(pair_address)
                         
-                        real_token_addr = get_real_token_address(pair_address)
+                        # NOUVEAU : On récupère l'adresse et l'âge réel du token
+                        real_token_addr, token_age = get_token_info(pair_address)
+                        
                         if not real_token_addr:
+                            continue
+                            
+                        # FILTRE ANTI-VIEUX TOKEN : Si la plus vieille pool a plus de 24h, on rejette
+                        if token_age > 24:
+                            print(f"    -> [REJETÉ >24h] Token vieux de {token_age:.0f}h ignoré.")
                             continue
                             
                         row_text = await row.inner_text()
@@ -106,19 +142,15 @@ async def check_trenchradar(page, token):
             body_text = await page.evaluate("document.body.innerText")
             body_lower = body_text.lower()
             
-            # FILTRE 1 : On cherche le mot "LOW" (comme le Wash Risk LOW en vert)
             is_low = "low risk" in body_lower or ("wash risk" in body_lower and "low" in body_lower)
             
-            # FILTRE 2 : Extraire le pourcentage du Top 5 Holders
-            top5_pct = 100.0 # Défaut à 100% si non trouvé (pour bloquer l'envoi)
-            # On cherche "top 5" suivi de "hold" ou "holders", puis on capture le premier pourcentage après
+            top5_pct = 100.0
             match_top5 = re.search(r'top\s*5\s*(?:holders?|hold).*?(\d+\.?\d*)\s*%', body_lower, re.DOTALL)
             if match_top5:
                 top5_pct = float(match_top5.group(1))
             
             print(f"    -> Statut LOW: {is_low} | Top 5 Holders: {top5_pct}%")
             
-            # RÈGLE FINALE : Si c'est LOW ET que le Top 5 est < 20%
             if is_low and top5_pct < 20.0:
                 return top5_pct
             else:
@@ -160,7 +192,6 @@ async def main():
         for token in tokens:
             top5_val = await check_trenchradar(tr_page, token)
             
-            # Si le token respecte les deux règles (LOW et Top5 < 20%)
             if top5_val is not None:
                 found_good_coin = True
                 message = f"✅ <b>Token LOW RISK & Faible Concentration !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Statut LOW (Vert) et Top 5 Holders à {top5_val}% sur TrenchRadar"
