@@ -1,3 +1,4 @@
+
 import asyncio
 from playwright.async_api import async_playwright
 import requests
@@ -32,7 +33,6 @@ def get_real_token_address(pair_address):
 
 async def get_new_solana_tokens(page):
     print("[*] Scraping DexScreener (Moins de 24h)...")
-    # Filtre 0 à 24h
     url = "https://dexscreener.com/solana?rankBy=pairAge&order=asc&minLiq=20000&minMarketCap=100000&maxAge=24&profile=1"
     
     rows = []
@@ -53,7 +53,7 @@ async def get_new_solana_tokens(page):
     seen_pairs = set()
     
     print("[*] Scroll mémorisé pour collecter les 25 premiers tokens...")
-    for scroll_count in range(30): # Plus de scrolls pour trouver 25 tokens
+    for scroll_count in range(30):
         rows = await page.query_selector_all("a[href*='/solana/']")
         
         for row in rows:
@@ -76,7 +76,6 @@ async def get_new_solana_tokens(page):
                         print(f"    -> [GARDÉ <24h] {name} | Token: {real_token_addr[:8]}...")
                         tokens.append({"name": name, "address": real_token_addr})
                         
-                        # NOUVEAU : On s'arrête à 25 tokens
                         if len(tokens) >= 25:
                             return tokens
             except:
@@ -95,7 +94,6 @@ async def check_trenchradar(page, token):
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
-        # Trouver la barre de recherche
         search_input = await page.wait_for_selector("input[type='text'], input[type='search'], input[placeholder*='search' i], input[placeholder*='address' i]", timeout=15000)
         
         if search_input:
@@ -108,17 +106,27 @@ async def check_trenchradar(page, token):
             body_text = await page.evaluate("document.body.innerText")
             body_lower = body_text.lower()
             
-            # NOUVEAU : On cherche le mot "LOW" (comme le Wash Risk LOW en vert)
-            if "low risk" in body_lower or ("wash risk" in body_lower and "low" in body_lower):
-                print("    -> Statut 'LOW' (Vert) trouvé !")
-                return True
+            # FILTRE 1 : On cherche le mot "LOW" (comme le Wash Risk LOW en vert)
+            is_low = "low risk" in body_lower or ("wash risk" in body_lower and "low" in body_lower)
+            
+            # FILTRE 2 : Extraire le pourcentage du Top 5 Holders
+            top5_pct = 100.0 # Défaut à 100% si non trouvé (pour bloquer l'envoi)
+            # On cherche "top 5" suivi de "hold" ou "holders", puis on capture le premier pourcentage après
+            match_top5 = re.search(r'top\s*5\s*(?:holders?|hold).*?(\d+\.?\d*)\s*%', body_lower, re.DOTALL)
+            if match_top5:
+                top5_pct = float(match_top5.group(1))
+            
+            print(f"    -> Statut LOW: {is_low} | Top 5 Holders: {top5_pct}%")
+            
+            # RÈGLE FINALE : Si c'est LOW ET que le Top 5 est < 20%
+            if is_low and top5_pct < 20.0:
+                return top5_pct
             else:
-                print("    -> Statut 'LOW' non trouvé sur la page.")
-                return False
+                return None
                 
     except Exception as e:
         print(f"    -> Erreur: {e}")
-        return False
+        return None
 
 async def main():
     delay = random.uniform(1, 5)
@@ -150,18 +158,18 @@ async def main():
         
         found_good_coin = False
         for token in tokens:
-            is_low_risk = await check_trenchradar(tr_page, token)
+            top5_val = await check_trenchradar(tr_page, token)
             
-            # RÈGLE : Si TrenchRadar affiche "LOW" en vert
-            if is_low_risk:
+            # Si le token respecte les deux règles (LOW et Top5 < 20%)
+            if top5_val is not None:
                 found_good_coin = True
-                message = f"✅ <b>Token LOW RISK Trouvé !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Statut LOW (Vert) sur TrenchRadar"
+                message = f"✅ <b>Token LOW RISK & Faible Concentration !</b>\n\nName: <b>{token['name']}</b>\nAddress: <code>{token['address']}</code>\n\nRésultat: Statut LOW (Vert) et Top 5 Holders à {top5_val}% sur TrenchRadar"
                 await send_telegram_message(message)
             
             await asyncio.sleep(3)
             
         if not found_good_coin:
-            print("[-] Aucun token n'a eu le statut LOW cette fois.")
+            print("[-] Aucun token n'a eu le statut LOW et Top5 < 20% cette fois.")
             
         print("✅ Agent finished task.")
 
